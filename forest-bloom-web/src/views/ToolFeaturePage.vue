@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { profile } from '../data/profile'
 
 type PaletteColor = { id: string; code: string; name: string; hex: string; enabled: boolean }
 type Bead = PaletteColor & { count: number }
@@ -8,6 +9,7 @@ type ColorOverride = { sourceHex: string; targetHex: string }
 type CellCoordinate = { row: number; column: number; label: string }
 type SavedWorkspace = {
   version: 1; width: number; height: number; cells: string[]; beads: Bead[]; sourceImage: string
+  showAuthorMark?: boolean
   colorSource: 'personal' | 'image'; columns: number; colorLimit: number; showGrid: boolean; showBeadStyle: boolean
   exportFormat: 'png' | 'pdf' | 'svg'; colorFormat: 'hex0x' | 'rgb' | 'hexhash'; colorOverrides: ColorOverride[]
   hiddenColors: string[]; fullScreenFit: 'contain' | 'cover'; zoom: number; panX: number; panY: number
@@ -23,6 +25,7 @@ const colorSource = ref<'personal' | 'image'>('personal')
 const colorLimit = ref(16)
 const showGrid = ref(true)
 const showBeadStyle = ref(false)
+const showAuthorMark = ref(true)
 const hiddenColors = ref<string[]>([])
 const beadMode = ref(false)
 const fullScreenFit = ref<'contain' | 'cover'>('contain')
@@ -48,6 +51,7 @@ const fullscreenBeads = computed(() => beads.value.filter(bead =>
   `${bead.code} ${bead.name} ${bead.hex}`.toLowerCase().includes(fullscreenColorSearch.value.trim().toLowerCase())
 ))
 const savedSourceImage = ref('')
+const authorAvatarDataUrl = ref('')
 const error = ref('')
 const beads = ref<Bead[]>([])
 const patternCells = ref<string[]>([])
@@ -113,7 +117,7 @@ watch(() => palette.value.map(color => `${color.id}:${color.code}:${color.name}:
 watch([columns, colorSource, colorLimit, showGrid, showBeadStyle, () => enabledPalette.value.map(color => `${color.id}:${color.code}:${color.name}:${color.hex}`).join('|'), () => JSON.stringify(colorOverrides.value)], () => {
   if (selectedFile.value) loadImage(selectedFile.value)
 })
-watch([exportFormat, colorFormat, hiddenColors, fullScreenFit, zoom, beadLabelMode], () => saveWorkspace())
+watch([exportFormat, colorFormat, hiddenColors, fullScreenFit, zoom, beadLabelMode, showAuthorMark], () => saveWorkspace())
 watch([patternUrl, hiddenColors, showGrid, showBeadStyle], () => {
   if (beadMode.value && patternCells.value.length) updateFullscreenSvg()
 })
@@ -122,6 +126,7 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
   window.addEventListener('keydown', onBeadModeKeydown)
   window.addEventListener('resize', updateFullscreenLayout)
+  loadAuthorAvatar()
   restoreWorkspace()
 })
 onBeforeUnmount(() => {
@@ -241,6 +246,19 @@ function compressSourceImage(image: HTMLImageElement) {
   return canvas.toDataURL('image/jpeg', 0.82)
 }
 
+function loadAuthorAvatar() {
+  const image = new Image()
+  image.onload = () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 96; canvas.height = 96
+    const context = canvas.getContext('2d')
+    if (!context) return
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    try { authorAvatarDataUrl.value = canvas.toDataURL('image/jpeg', 0.86) } catch { /* keep the initials fallback */ }
+  }
+  image.src = profile.avatarImage
+}
+
 function createPatternDataUrl(cells: string[], width: number, height: number) {
   const scale = Math.max(6, Math.min(18, Math.floor(900 / width)))
   const canvas = document.createElement('canvas'); canvas.width = width * scale; canvas.height = height * scale
@@ -280,7 +298,8 @@ function saveWorkspace() {
     version: 1, width: patternWidth.value, height: patternHeight.value, cells: patternCells.value,
     beads: beads.value, sourceImage: savedSourceImage.value, colorSource: colorSource.value,
     columns: columns.value, colorLimit: colorLimit.value, showGrid: showGrid.value,
-    showBeadStyle: showBeadStyle.value, exportFormat: exportFormat.value, colorFormat: colorFormat.value,
+    showBeadStyle: showBeadStyle.value, showAuthorMark: showAuthorMark.value,
+    exportFormat: exportFormat.value, colorFormat: colorFormat.value,
     colorOverrides: colorOverrides.value, hiddenColors: hiddenColors.value, fullScreenFit: fullScreenFit.value,
     zoom: zoom.value, panX: panX.value, panY: panY.value, beadLabelMode: beadLabelMode.value,
     selectedCell: selectedCell.value ? { row: selectedCell.value.row, column: selectedCell.value.column } : null
@@ -302,6 +321,7 @@ async function restoreWorkspace() {
     colorLimit.value = saved.colorLimit
     showGrid.value = saved.showGrid
     showBeadStyle.value = saved.showBeadStyle
+    showAuthorMark.value = saved.showAuthorMark !== false
     exportFormat.value = saved.exportFormat
     colorFormat.value = saved.colorFormat
     colorOverrides.value = saved.colorOverrides ?? []
@@ -674,11 +694,18 @@ function formatColor(hex: string) { const rgb=hex.slice(1).match(/.{2}/g)!.map(v
 function beadLabel(bead: Bead) { return beadLabelMode.value === 'name' ? bead.name : beadLabelMode.value === 'code' ? bead.code : formatColor(bead.hex) }
 function download() {
   if (!patternUrl.value) return
-  const header = 72, rowHeight = 28, legendColumns = 3, scale = Math.max(6, Math.min(18, Math.floor(900 / patternWidth.value)))
+  error.value = ''
+  const header = showAuthorMark.value ? 96 : 72, rowHeight = 28, legendColumns = 3, scale = Math.max(6, Math.min(18, Math.floor(900 / patternWidth.value)))
+  const titleY = showAuthorMark.value ? 36 : 38
+  const detailsY = showAuthorMark.value ? 58 : 61
   const patternPixelWidth = patternWidth.value * scale
   const patternPixelHeight = patternHeight.value * scale
   const legendRows = Math.ceil(beads.value.length / legendColumns)
   const exportHeight = header + patternPixelHeight + legendRows * rowHeight + 30
+  const authorMarkSvg = !showAuthorMark.value ? '' : authorAvatarDataUrl.value
+    ? `<defs><clipPath id="author-avatar-clip"><circle cx="${patternPixelWidth - 91}" cy="78" r="11"/></clipPath></defs><image href="${authorAvatarDataUrl.value}" x="${patternPixelWidth - 102}" y="67" width="22" height="22" preserveAspectRatio="xMidYMid slice" clip-path="url(#author-avatar-clip)"/><circle cx="${patternPixelWidth - 91}" cy="78" r="11" fill="none" stroke="#263b4724"/>`
+    : `<circle cx="${patternPixelWidth - 91}" cy="78" r="11" fill="#6a90a6"/><text x="${patternPixelWidth - 91}" y="82" text-anchor="middle" fill="#fff" font-size="11">A</text>`
+  const authorLabelSvg = showAuthorMark.value ? `<text x="${patternPixelWidth - 75}" y="82" fill="#78858a" font-family="sans-serif" font-size="11">${escapeXml(profile.name)}</text>` : ''
   if (exportFormat.value === 'svg') {
     const cellRects=showBeadStyle.value
       ? patternCells.value.map((color,i)=>{
@@ -694,28 +721,102 @@ function download() {
       return `<rect x="${x}" y="${y-12}" width="16" height="16" fill="${bead.hex}" stroke="#263b4740"/><text x="${x+24}" y="${y+1}" fill="#263b47">${escapeXml(bead.code)} · ${formatColor(bead.hex)} · ${bead.count} 颗</text>`
     }).join('')
     const sourceLabel = colorSource.value === 'personal' ? '个人色库' : '图片原色'
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${patternPixelWidth}" height="${exportHeight}" viewBox="0 0 ${patternPixelWidth} ${exportHeight}"><rect width="100%" height="100%" fill="#fffaf8"/><text x="24" y="38" fill="#263b47" font-family="sans-serif" font-size="26" font-weight="bold">拼豆图</text><text x="24" y="61" fill="#6a90a6" font-family="sans-serif" font-size="14">${patternWidth.value} × ${patternHeight.value} 颗 · ${totalBeads.value} 颗 · ${beads.value.length} 色 · ${sourceLabel}</text><g shape-rendering="${showBeadStyle.value ? 'geometricPrecision' : 'crispEdges'}">${cellRects}${grid}</g><g font-family="sans-serif" font-size="13">${legend}</g></svg>`
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${patternPixelWidth}" height="${exportHeight}" viewBox="0 0 ${patternPixelWidth} ${exportHeight}"><rect width="100%" height="100%" fill="#fffaf8"/><text x="24" y="${titleY}" fill="#263b47" font-family="sans-serif" font-size="26" font-weight="bold">拼豆图</text><text x="24" y="${detailsY}" fill="#6a90a6" font-family="sans-serif" font-size="14">${patternWidth.value} × ${patternHeight.value} 颗 · ${totalBeads.value} 颗 · ${beads.value.length} 色 · ${sourceLabel}</text>${authorMarkSvg}${authorLabelSvg}<g shape-rendering="${showBeadStyle.value ? 'geometricPrecision' : 'crispEdges'}">${cellRects}${grid}</g><g font-family="sans-serif" font-size="13">${legend}</g></svg>`
     saveFile(new Blob([svg],{type:'image/svg+xml'}),'abin-bead-pattern.svg'); return
   }
   const pattern = new Image(); pattern.onload = () => {
     const canvas = document.createElement('canvas'); canvas.width = pattern.width; canvas.height = exportHeight
-    const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#fffaf8'; ctx.fillRect(0,0,canvas.width,canvas.height)
-    ctx.fillStyle='#263b47'; ctx.font='bold 26px sans-serif'; ctx.fillText('拼豆图',24,38)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) { error.value = '无法创建导出画布，请刷新页面后重试。'; return }
+    ctx.fillStyle = '#fffaf8'; ctx.fillRect(0,0,canvas.width,canvas.height)
+    ctx.fillStyle='#263b47'; ctx.font='bold 26px sans-serif'; ctx.fillText('拼豆图',24,titleY)
     const sourceLabel = colorSource.value === 'personal' ? '个人色库' : '图片原色'
-    ctx.fillStyle='#6a90a6'; ctx.font='14px sans-serif'; ctx.fillText(`${patternWidth.value} × ${patternHeight.value} 颗 · ${totalBeads.value} 颗 · ${beads.value.length} 色 · ${sourceLabel}`,24,61)
-    ctx.drawImage(pattern,0,header)
-    const y0=header+pattern.height+26, cellW=canvas.width/legendColumns
-    ctx.font='13px sans-serif'; beads.value.forEach((bead,index)=>{const x=(index%legendColumns)*cellW+16,y=y0+Math.floor(index/legendColumns)*rowHeight;ctx.fillStyle=bead.hex;ctx.fillRect(x,y-12,16,16);ctx.strokeStyle='#263b4740';ctx.strokeRect(x,y-12,16,16);ctx.fillStyle='#263b47';ctx.fillText(`${bead.code} · ${formatColor(bead.hex)} · ${bead.count} 颗`,x+24,y+1)})
-    if(exportFormat.value==='pdf'){const w=window.open('','_blank');if(!w)return;w.document.write(`<title>Abin Bead Pattern</title><img style="width:100%" src="${canvas.toDataURL('image/png')}" onload="window.print()">`);w.document.close();return}
-    canvas.toBlob(blob=>{if(blob)saveFile(blob,'abin-bead-pattern.png')},'image/png')
-  }; pattern.src=patternUrl.value
+    ctx.fillStyle='#6a90a6'; ctx.font='14px sans-serif'; ctx.fillText(`${patternWidth.value} × ${patternHeight.value} 颗 · ${totalBeads.value} 颗 · ${beads.value.length} 色 · ${sourceLabel}`,24,detailsY)
+    const avatarX = canvas.width - 102, avatarY = 67
+    const finishExport = () => {
+      if (!showAuthorMark.value) { finishPatternExport(); return }
+      ctx.save(); ctx.beginPath(); ctx.arc(avatarX + 11, avatarY + 11, 11, 0, Math.PI * 2); ctx.clip()
+      if (authorAvatarDataUrl.value) {
+        const authorAvatar = new Image()
+        authorAvatar.onload = () => {
+          ctx.drawImage(authorAvatar, avatarX, avatarY, 22, 22); ctx.restore()
+          finishPatternExport()
+        }
+        authorAvatar.onerror = () => { ctx.restore(); drawAuthorFallback(ctx, avatarX, avatarY); finishPatternExport() }
+        authorAvatar.src = authorAvatarDataUrl.value
+        return
+      }
+      ctx.restore(); drawAuthorFallback(ctx, avatarX, avatarY)
+      finishPatternExport()
+    }
+    const drawAuthorFallback = (context: CanvasRenderingContext2D, x: number, y: number) => {
+      context.beginPath(); context.arc(x + 11, y + 11, 11, 0, Math.PI * 2); context.fillStyle = '#6a90a6'; context.fill()
+      context.fillStyle = '#fff'; context.font = '11px sans-serif'; context.textAlign = 'center'; context.fillText('A', x + 11, y + 15); context.textAlign = 'start'
+    }
+    const finishPatternExport = () => {
+      if (showAuthorMark.value) {
+        ctx.strokeStyle='#263b4724'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(avatarX + 11, avatarY + 11, 11, 0, Math.PI * 2); ctx.stroke()
+        ctx.fillStyle='#78858a'; ctx.font='11px sans-serif'; ctx.fillText(profile.name,avatarX + 27,82)
+      }
+      ctx.drawImage(pattern,0,header)
+      const y0=header+pattern.height+26, cellW=canvas.width/legendColumns
+      ctx.font='13px sans-serif'; beads.value.forEach((bead,index)=>{const x=(index%legendColumns)*cellW+16,y=y0+Math.floor(index/legendColumns)*rowHeight;ctx.fillStyle=bead.hex;ctx.fillRect(x,y-12,16,16);ctx.strokeStyle='#263b4740';ctx.strokeRect(x,y-12,16,16);ctx.fillStyle='#263b47';ctx.fillText(`${bead.code} · ${formatColor(bead.hex)} · ${bead.count} 颗`,x+24,y+1)})
+      if(exportFormat.value==='pdf'){
+        canvas.toBlob(async jpegBlob => {
+          if (!jpegBlob) { error.value = 'PDF 图像编码失败，请稍后重试。'; return }
+          try {
+            const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer())
+            saveFile(createPdfBlob(canvas.width, canvas.height, jpegBytes), 'abin-bead-pattern.pdf')
+          } catch { error.value = 'PDF 生成失败，请稍后重试。' }
+        }, 'image/jpeg', 0.94)
+        return
+      }
+      canvas.toBlob(blob=>{
+        if(blob) saveFile(blob,'abin-bead-pattern.png')
+        else error.value = 'PNG 生成失败，请稍后重试。'
+      },'image/png')
+    }
+    finishExport()
+  }
+  pattern.onerror = () => { error.value = '无法读取当前拼豆图，请重新生成图案后再导出。' }
+  pattern.src=patternUrl.value
 }
-function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
+
+function createPdfBlob(width: number, height: number, jpegBytes: Uint8Array) {
+  const encoder = new TextEncoder()
+  const pageWidth = 595.28
+  const pageHeight = pageWidth * height / width
+  const content = encoder.encode(`q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ`)
+  const chunks: Uint8Array[] = []
+  const offsets = [0]
+  let byteOffset = 0
+  const append = (chunk: Uint8Array) => { chunks.push(chunk); byteOffset += chunk.byteLength }
+  const appendObject = (objectNumber: number, body: Uint8Array[]) => {
+    offsets[objectNumber] = byteOffset
+    body.forEach(append)
+  }
+  append(encoder.encode('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'))
+  appendObject(1, [encoder.encode('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n')])
+  appendObject(2, [encoder.encode('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n')])
+  appendObject(3, [encoder.encode(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`)])
+  appendObject(4, [
+    encoder.encode(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.byteLength} >>\nstream\n`),
+    jpegBytes,
+    encoder.encode('\nendstream\nendobj\n')
+  ])
+  appendObject(5, [encoder.encode(`5 0 obj\n<< /Length ${content.byteLength} >>\nstream\n`), content, encoder.encode('\nendstream\nendobj\n')])
+  const xrefOffset = byteOffset
+  const xref = `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`
+  append(encoder.encode(xref))
+  return new Blob(chunks, { type: 'application/pdf' })
+}
+
+function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.style.display='none';document.body.appendChild(a);a.click();a.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}
 </script>
 
 <template>
   <div class="bead-app">
-    <header><RouterLink to="/?section=diy" class="brand">✦ Abin <span>DIY STUDIO</span></RouterLink><div class="header-actions"><button type="button" class="header-action info-action" @click="infoDialogOpen = true">功能简介</button><button type="button" class="header-action reset-action" @click="resetLocalData">清除缓存并重置</button><span class="local-note">图片与设置保存在本机</span></div></header>
+    <header><RouterLink to="/?section=diy" class="brand"><img :src="profile.avatarImage" alt=""/><span class="brand-name">{{ profile.name }}</span><span class="brand-divider">·</span><span class="brand-label">DIY STUDIO</span></RouterLink><div class="header-actions"><button type="button" class="header-action info-action" @click="infoDialogOpen = true">功能简介</button><button type="button" class="header-action reset-action" @click="resetLocalData">清除缓存并重置</button><span class="local-note">图片与设置保存在本机</span></div></header>
     <main>
       <section class="intro"><p>IMAGE TO BEADS</p><h1>把喜欢的图片，<em>织成拼豆。</em></h1><span>{{ colorSource === 'personal' ? '用你手头的拼豆色板匹配图片，并生成对应的用量清单。' : '保留图片的主要色彩，并生成颜色用量清单。' }}</span></section>
       <section class="workspace">
@@ -729,6 +830,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
           <label class="check bead-style-check"><input v-model="showBeadStyle" type="checkbox"/><span>显示拼豆颗粒<small>圆形豆粒，白色中心孔</small></span></label>
           <fieldset class="export-format"><legend>导出格式</legend><div class="format-options"><label><input v-model="exportFormat" type="radio" value="png"/><span class="format-card"><b>PNG</b><small>方便分享<br/>兼容性好</small></span></label><label><input v-model="exportFormat" type="radio" value="pdf"/><span class="format-card"><b>PDF</b><small>适合打印<br/>纸质参考</small></span></label><label><input v-model="exportFormat" type="radio" value="svg"/><span class="format-card"><b>SVG</b><small>矢量图形<br/>平板放大清晰</small></span></label></div></fieldset>
           <fieldset class="export-format"><legend>色值格式</legend><div class="format-options"><label><input v-model="colorFormat" type="radio" value="hexhash"/><span class="format-card"><b>#HEX</b><small>#RRGGBB<br/>默认 · 网页常用</small></span></label><label><input v-model="colorFormat" type="radio" value="rgb"/><span class="format-card"><b>RGB</b><small>RGB(r, g, b)<br/>通道值</small></span></label><label><input v-model="colorFormat" type="radio" value="hex0x"/><span class="format-card"><b>0x</b><small>0xRRGGBB<br/>十六进制</small></span></label></div></fieldset>
+          <label class="check author-mark-toggle"><input v-model="showAuthorMark" type="checkbox"/><span>导出时显示我的头像和名字<small>在图案角落留下轻量署名</small></span></label>
           <button v-if="patternUrl" class="bead-mode-button" type="button" @click="enterBeadMode">进入拼豆模式 ⛶</button>
           <button class="download" :disabled="!patternUrl" @click="download">导出拼豆图 ↓</button>
           <p v-if="error" class="error">{{ error }}</p>
@@ -747,7 +849,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
       </section>
       <section v-if="beads.length" class="palette"><h2>拼豆用量清单 <small>共 {{ totalBeads }} 颗 · {{ renderedColumns }} × {{ rows }} 格</small></h2><span v-for="bead in beads" :key="bead.code"><i :style="{background:bead.hex}"></i>{{ bead.code }} · {{ bead.name }} · {{ formatColor(bead.hex) }} · {{ bead.count }} 颗</span></section>
     </main>
-    <footer><span>Abin · DIY Studio</span><RouterLink to="/?section=diy">返回功能目录</RouterLink></footer>
+    <footer><span class="tool-footer-brand">{{ profile.name }} · DIY Studio</span><div class="tool-footer-links"><a :href="`mailto:${profile.email}`">{{ profile.email }}</a><a :href="`mailto:${profile.email}?subject=${encodeURIComponent('拼豆工具改进建议 / 问题反馈')}`">改进建议 · 问题反馈 ↗</a><RouterLink to="/?section=diy">返回功能目录</RouterLink></div></footer>
     <div v-if="infoDialogOpen" class="info-backdrop" role="presentation" @click.self="infoDialogOpen = false">
       <section class="info-dialog" role="dialog" aria-modal="true" aria-labelledby="info-title">
         <header class="info-dialog-heading"><div><p>TOOL GUIDE</p><h2 id="info-title">图片转拼豆 · 功能简介</h2></div><button type="button" aria-label="关闭功能简介" @click="infoDialogOpen = false">×</button></header>
@@ -801,4 +903,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
 .bead-mode-view-options{display:flex;align-items:center;gap:6px}.bead-mode-view-options label{display:flex;align-items:center;gap:5px;padding:6px 9px;border:1px solid #263b4720;border-radius:999px;background:#fff;color:#334b56;font-size:11px;white-space:nowrap;cursor:pointer}.bead-mode-view-options input{margin:0;accent-color:#6a90a6}
 .header-actions{display:flex;align-items:center;gap:9px}.header-action{padding:8px 12px;border:1px solid #263b4722;border-radius:999px;background:#fffaf8;color:#263b47;font-size:12px;cursor:pointer}.header-action:hover{border-color:#6a90a6;background:#edf2f3}.reset-action{color:#9a5d5d}.info-backdrop{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;padding:16px;background:#17252dcc;backdrop-filter:blur(5px)}.info-dialog{display:flex;flex-direction:column;width:min(720px,100%);max-height:min(86vh,850px);overflow:hidden;border:1px solid #263b4720;border-radius:20px;background:#fffaf8;color:#263b47;box-shadow:0 24px 80px #101a1f55}.info-dialog-heading{height:auto!important;min-height:84px;padding:16px 22px!important;border-bottom:1px solid #263b471c;background:#fffaf8}.info-dialog-heading p{margin:0 0 5px;color:#6a90a6;font:10px monospace;letter-spacing:.14em}.info-dialog-heading h2{margin:0;font:600 23px Georgia,serif}.info-dialog-heading button{width:34px;height:34px;border:1px solid #263b4720;border-radius:50%;background:#fff;color:#52636a;font-size:23px;cursor:pointer}.info-dialog-content{overflow:auto;padding:4px 24px 12px}.info-dialog-content section{padding:14px 0;border-bottom:1px solid #263b4714}.info-dialog-content h3{margin:0 0 8px;color:#52798e;font-size:14px}.info-dialog-content ul{margin:0;padding-left:19px;color:#516168;font-size:12px;line-height:1.75}.info-dialog-footer{height:auto!important;min-height:64px;padding:11px 20px!important;border-top:1px solid #263b4718!important;background:#f1f5f5!important;color:#69777c!important}.info-dialog-footer span{font-size:11px;line-height:1.5}.info-dialog-footer button{padding:8px 15px;border:0;border-radius:999px;background:#263b47;color:#fff;font-size:12px;white-space:nowrap;cursor:pointer}
 @media(max-width:760px){.header-actions{gap:5px}.header-action{padding:7px 9px;font-size:11px}.header-actions .local-note{display:none}.info-backdrop{padding:10px}.info-dialog-heading{padding:14px 16px!important}.info-dialog-content{padding:2px 17px 8px}.info-dialog-footer{align-items:flex-start!important;gap:10px;flex-direction:column}}
+.brand{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}.brand img{width:34px;height:34px;flex:none;border:2px solid #fff;border-radius:50%;object-fit:cover;box-shadow:0 2px 8px #263b4722}.brand .brand-name{margin:0;color:#263b47;font:600 17px Georgia,serif;letter-spacing:0}.brand .brand-divider{margin:0;color:#9aabb0;font:14px sans-serif}.brand .brand-label{margin:0;color:#6a90a6;font:10px monospace;letter-spacing:.1em}.bead-app footer{height:auto;min-height:72px;padding-top:15px;padding-bottom:15px;gap:16px}.tool-footer-brand{color:#fff;font:600 14px Georgia,serif}.tool-footer-links{display:flex;align-items:center;justify-content:flex-end;gap:18px;flex-wrap:wrap}.tool-footer-links a{color:#b7cbd2;font-size:12px}.tool-footer-links a:hover{color:#fff}.bead-app footer .router-link-active{color:#b7cbd2}
+.author-mark-toggle{margin:10px 0 18px}.author-mark-toggle span{display:flex;flex-direction:column;gap:4px}.author-mark-toggle small{color:#77877c;font-size:11px}
+@media(max-width:760px){.bead-app header{height:auto;min-height:72px;padding:12px 16px;gap:10px;flex-wrap:wrap}.brand{gap:6px}.brand img{width:30px;height:30px}.brand .brand-name{font-size:15px}.brand .brand-label{font-size:9px}.bead-app footer{align-items:flex-start;flex-direction:column;padding:18px 20px}.tool-footer-links{justify-content:flex-start;gap:9px 16px}}
 </style>
