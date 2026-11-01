@@ -163,11 +163,11 @@ function loadImage(file: File) {
     const pixels = ctx.getImageData(0, 0, w, h).data
     const cellColors: string[] = []
     for (let i = 0; i < pixels.length; i += 4) {
-      if (pixels[i + 3] < 255) {
-        const alpha = pixels[i + 3] / 255
-        pixels[i] = Math.round(pixels[i] * alpha + 255 * (1 - alpha))
-        pixels[i + 1] = Math.round(pixels[i + 1] * alpha + 255 * (1 - alpha))
-        pixels[i + 2] = Math.round(pixels[i + 2] * alpha + 255 * (1 - alpha))
+      if (pixels[i + 3]! < 255) {
+        const alpha = pixels[i + 3]! / 255
+        pixels[i] = Math.round(pixels[i]! * alpha + 255 * (1 - alpha))
+        pixels[i + 1] = Math.round(pixels[i + 1]! * alpha + 255 * (1 - alpha))
+        pixels[i + 2] = Math.round(pixels[i + 2]! * alpha + 255 * (1 - alpha))
         pixels[i + 3] = 255
       }
     }
@@ -176,7 +176,11 @@ function loadImage(file: File) {
       : (() => {
           const histogram = new Map<string, number>()
           for (let i = 0; i < pixels.length; i += 4) {
-            const rgb = [pixels[i], pixels[i + 1], pixels[i + 2]].map(value => Math.min(255, Math.round(value / 8) * 8))
+            const rgb: [number, number, number] = [
+              Math.min(255, Math.round(pixels[i]! / 8) * 8),
+              Math.min(255, Math.round(pixels[i + 1]! / 8) * 8),
+              Math.min(255, Math.round(pixels[i + 2]! / 8) * 8)
+            ]
             const key = rgb.map(value => value.toString(16).padStart(2, '0')).join('').toUpperCase()
             histogram.set(key, (histogram.get(key) ?? 0) + 1)
           }
@@ -188,32 +192,31 @@ function loadImage(file: File) {
             enabled: true
           }))
         })()
-    const paletteColors = activePalette.map(color => ({
-      color,
-      rgb: color.hex.slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16))
-    }))
+    if (!activePalette.length) {
+      patternUrl.value = ''; beads.value = []; error.value = '当前没有可用于转换的颜色，请启用色板颜色或提高图片颜色上限。'; return
+    }
+    const paletteColors = activePalette.map(color => ({ color, rgb: hexToRgb(color.hex) }))
     const overrides = colorOverrides.value.map(item => ({
       item,
-      rgb: item.sourceHex.slice(1).match(/.{2}/g)!.map(value => parseInt(value, 16))
+      rgb: hexToRgb(item.sourceHex)
     }))
     for (let i = 0; i < pixels.length; i += 4) {
       let closestOverride: ColorOverride | undefined
       let overrideDistance = 18 ** 2 * 9
       for (const override of colorSource.value === 'personal' ? overrides : []) {
         const [r, g, b] = override.rgb
-        const distance = 2 * (pixels[i] - r) ** 2 + 4 * (pixels[i + 1] - g) ** 2 + 3 * (pixels[i + 2] - b) ** 2
+        const distance = 2 * (pixels[i]! - r) ** 2 + 4 * (pixels[i + 1]! - g) ** 2 + 3 * (pixels[i + 2]! - b) ** 2
         if (distance < overrideDistance) { overrideDistance = distance; closestOverride = override.item }
       }
       const manualTarget = closestOverride && activePalette.find(color => color.hex === closestOverride!.targetHex)
-      let best = manualTarget ?? activePalette[0]
+      let best = manualTarget ?? activePalette[0]!
       let distance = manualTarget ? 0 : Infinity
       if (distance === Infinity) for (const candidate of paletteColors) {
         const [r, g, b] = candidate.rgb
-        const d = 2 * (pixels[i] - r) ** 2 + 4 * (pixels[i + 1] - g) ** 2 + 3 * (pixels[i + 2] - b) ** 2
+        const d = 2 * (pixels[i]! - r) ** 2 + 4 * (pixels[i + 1]! - g) ** 2 + 3 * (pixels[i + 2]! - b) ** 2
         if (d < distance) { distance = d; best = candidate.color }
       }
-      const mapped = best
-      cellColors.push(mapped.hex)
+      cellColors.push(best.hex)
     }
     patternCells.value = cellColors
     patternWidth.value = w
@@ -667,7 +670,8 @@ function pickImageColor(event: MouseEvent) {
     const context = canvas.getContext('2d', { willReadFrequently: true })!
     context.fillStyle = '#fff'; context.fillRect(0, 0, 1, 1)
     context.drawImage(sampleImage, x, y, 1, 1, 0, 0, 1, 1)
-    const [r, g, b] = context.getImageData(0, 0, 1, 1).data
+    const sampledPixels = context.getImageData(0, 0, 1, 1).data
+    const [r, g, b] = [sampledPixels[0]!, sampledPixels[1]!, sampledPixels[2]!]
     samplingColor.value = `#${[r, g, b].map(value => value.toString(16).padStart(2, '0')).join('').toUpperCase()}`
     samplingMode.value = false
     error.value = ''
@@ -690,6 +694,10 @@ function escapeXml(value: string) {
 }
 
 function onFile(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (file) { selectedFile.value = file; loadImage(file) } }
+function hexToRgb(hex: string): [number, number, number] {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex)
+  return match ? [parseInt(match[1]!, 16), parseInt(match[2]!, 16), parseInt(match[3]!, 16)] : [0, 0, 0]
+}
 function formatColor(hex: string) { const rgb=hex.slice(1).match(/.{2}/g)!.map(v=>parseInt(v,16)); return colorFormat.value==='rgb'?`RGB(${rgb.join(', ')})`:colorFormat.value==='hexhash'?hex.toUpperCase():`0x${hex.slice(1).toUpperCase()}` }
 function beadLabel(bead: Bead) { return beadLabelMode.value === 'name' ? bead.name : beadLabelMode.value === 'code' ? bead.code : formatColor(bead.hex) }
 function download() {
@@ -808,7 +816,10 @@ function createPdfBlob(width: number, height: number, jpegBytes: Uint8Array) {
   const xrefOffset = byteOffset
   const xref = `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`
   append(encoder.encode(xref))
-  return new Blob(chunks, { type: 'application/pdf' })
+  const pdfBytes = new Uint8Array(byteOffset)
+  let cursor = 0
+  for (const chunk of chunks) { pdfBytes.set(chunk, cursor); cursor += chunk.byteLength }
+  return new Blob([pdfBytes.buffer], { type: 'application/pdf' })
 }
 
 function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.style.display='none';document.body.appendChild(a);a.click();a.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}
