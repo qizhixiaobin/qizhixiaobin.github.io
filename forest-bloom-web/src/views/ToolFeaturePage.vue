@@ -9,6 +9,7 @@ type ColorOverride = { sourceHex: string; targetHex: string }
 type CellCoordinate = { row: number; column: number; label: string }
 type SavedWorkspace = {
   version: 1; width: number; height: number; cells: string[]; beads: Bead[]; sourceImage: string
+  cleared?: boolean
   showAuthorMark?: boolean
   colorSource: 'personal' | 'image'; columns: number; colorLimit: number; showGrid: boolean; showBeadStyle: boolean
   exportFormat: 'png' | 'pdf' | 'svg'; colorFormat: 'hex0x' | 'rgb' | 'hexhash'; colorOverrides: ColorOverride[]
@@ -18,10 +19,11 @@ type SavedWorkspace = {
 }
 const sourceUrl = ref('')
 const infoDialogOpen = ref(false)
+const toastMessage = ref('')
 const selectedFile = ref<File | null>(null)
 const patternUrl = ref('')
 const columns = ref(48)
-const colorSource = ref<'personal' | 'image'>('personal')
+const colorSource = ref<'personal' | 'image'>('image')
 const colorLimit = ref(16)
 const showGrid = ref(true)
 const showBeadStyle = ref(false)
@@ -110,12 +112,14 @@ const minimapStyle = computed(() => {
 const columnTicks = computed(() => makeColumnTicks())
 const rowTicks = computed(() => makeRowTicks())
 let renderRequest = 0
+let toastTimer = 0
 const exportFormat = ref<'png' | 'pdf' | 'svg'>('png')
 const colorFormat = ref<'hex0x' | 'rgb' | 'hexhash'>('hexhash')
 
 watch(() => palette.value.map(color => `${color.id}:${color.code}:${color.name}:${color.hex}:${color.enabled}`).join('|'), () => savePalette())
 watch([columns, colorSource, colorLimit, showGrid, showBeadStyle, () => enabledPalette.value.map(color => `${color.id}:${color.code}:${color.name}:${color.hex}`).join('|'), () => JSON.stringify(colorOverrides.value)], () => {
   if (selectedFile.value) loadImage(selectedFile.value)
+  saveWorkspace()
 })
 watch([exportFormat, colorFormat, hiddenColors, fullScreenFit, zoom, beadLabelMode, showAuthorMark], () => saveWorkspace())
 watch([patternUrl, hiddenColors, showGrid, showBeadStyle], () => {
@@ -133,6 +137,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   window.removeEventListener('keydown', onBeadModeKeydown)
   window.removeEventListener('resize', updateFullscreenLayout)
+  window.clearTimeout(toastTimer)
   if (fullscreenSvgUrl.value) URL.revokeObjectURL(fullscreenSvgUrl.value)
 })
 
@@ -150,7 +155,8 @@ function loadImage(file: File) {
     if (colorSource.value === 'personal' && !enabledPalette.value.length) {
       patternUrl.value = ''
       beads.value = []
-      error.value = '请先在下方色板中启用至少一种你手头有的拼豆颜色。'
+      error.value = ''
+      showToast('个人色库还没有可用颜色，请先添加并启用至少一种拼豆颜色。')
       return
     }
     const w = Math.max(1, Math.min(256, Math.round(columns.value)))
@@ -296,10 +302,12 @@ function drawBeadCells(context: CanvasRenderingContext2D, cells: string[], width
 }
 
 function saveWorkspace() {
-  if (!patternCells.value.length) return
+  const hasPattern = patternCells.value.length > 0
   const saved: SavedWorkspace = {
-    version: 1, width: patternWidth.value, height: patternHeight.value, cells: patternCells.value,
-    beads: beads.value, sourceImage: savedSourceImage.value, colorSource: colorSource.value,
+    version: 1, cleared: !hasPattern,
+    width: hasPattern ? patternWidth.value : 0, height: hasPattern ? patternHeight.value : 0,
+    cells: hasPattern ? patternCells.value : [], beads: hasPattern ? beads.value : [],
+    sourceImage: hasPattern ? savedSourceImage.value : '', colorSource: colorSource.value,
     columns: columns.value, colorLimit: colorLimit.value, showGrid: showGrid.value,
     showBeadStyle: showBeadStyle.value, showAuthorMark: showAuthorMark.value,
     exportFormat: exportFormat.value, colorFormat: colorFormat.value,
@@ -316,9 +324,7 @@ async function restoreWorkspace() {
     const raw = localStorage.getItem('abin-bead-workspace-v1')
     if (!raw) return
     const saved = JSON.parse(raw) as SavedWorkspace
-    if (saved.version !== 1 || !Number.isInteger(saved.width) || !Number.isInteger(saved.height) ||
-      saved.width < 1 || saved.height < 1 || !Array.isArray(saved.cells) || saved.cells.length !== saved.width * saved.height ||
-      saved.cells.some(color => typeof color !== 'string' || !/^#[\da-f]{6}$/i.test(color)) || !Array.isArray(saved.beads)) return
+    if (saved.version !== 1) return
     columns.value = saved.columns
     colorSource.value = saved.colorSource
     colorLimit.value = saved.colorLimit
@@ -334,6 +340,10 @@ async function restoreWorkspace() {
     panX.value = saved.panX ?? 0
     panY.value = saved.panY ?? 0
     beadLabelMode.value = saved.beadLabelMode ?? 'export'
+    if (saved.cleared) return
+    if (!Number.isInteger(saved.width) || !Number.isInteger(saved.height) ||
+      saved.width < 1 || saved.height < 1 || !Array.isArray(saved.cells) || saved.cells.length !== saved.width * saved.height ||
+      saved.cells.some(color => typeof color !== 'string' || !/^#[\da-f]{6}$/i.test(color)) || !Array.isArray(saved.beads)) return
     selectedCell.value = saved.selectedCell && saved.selectedCell.row >= 1 && saved.selectedCell.row <= saved.height && saved.selectedCell.column >= 1 && saved.selectedCell.column <= saved.width
       ? { ...saved.selectedCell, label: `${excelColumn(saved.selectedCell.column)}${saved.selectedCell.row}` }
       : null
@@ -376,6 +386,7 @@ function onFullscreenChange() {
 }
 
 function onBeadModeKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && toastMessage.value) { toastMessage.value = ''; return }
   if (event.key === 'Escape' && infoDialogOpen.value) { infoDialogOpen.value = false; return }
   if (event.key === 'Escape' && beadMode.value && !document.fullscreenElement) beadMode.value = false
 }
@@ -387,6 +398,28 @@ function resetLocalData() {
     localStorage.removeItem('abin-bead-workspace-v1')
     window.location.reload()
   } catch { error.value = '清除本地数据失败，请检查浏览器的站点存储设置。' }
+}
+
+function clearImage() {
+  renderRequest++
+  if (sourceUrl.value) URL.revokeObjectURL(sourceUrl.value)
+  if (fullscreenSvgUrl.value) URL.revokeObjectURL(fullscreenSvgUrl.value)
+  sourceUrl.value = ''
+  fullscreenSvgUrl.value = ''
+  selectedFile.value = null
+  savedSourceImage.value = ''
+  patternUrl.value = ''
+  patternCells.value = []
+  beads.value = []
+  patternWidth.value = 0
+  patternHeight.value = 0
+  selectedCell.value = null
+  hoveredCell.value = null
+  samplingColor.value = ''
+  samplingMode.value = false
+  error.value = ''
+  toastMessage.value = ''
+  saveWorkspace()
 }
 
 function toggleHiddenColor(hex: string) {
@@ -656,6 +689,14 @@ function setColorSource(source: 'personal' | 'image') {
   colorSource.value = source
   samplingMode.value = false
   samplingColor.value = ''
+  if (source === 'personal' && enabledPalette.value.length === 0) showToast('个人色库还没有可用颜色，请先添加并启用至少一种拼豆颜色。')
+  else toastMessage.value = ''
+}
+
+function showToast(message: string) {
+  toastMessage.value = message
+  window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => { toastMessage.value = '' }, 4500)
 }
 
 function pickImageColor(event: MouseEvent) {
@@ -833,7 +874,8 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
       <section class="workspace">
         <aside class="controls">
           <label class="upload"><input type="file" accept="image/*" @change="onFile"/><b>＋</b><strong>选择一张图片</strong><small>PNG、JPG、WebP 等格式</small></label>
-          <div class="setting"><span>颜色来源</span><div class="source-switch" role="group" aria-label="图案颜色来源"><button type="button" :class="{ active: colorSource === 'personal' }" @click="setColorSource('personal')">个人色库</button><button type="button" :class="{ active: colorSource === 'image' }" @click="setColorSource('image')">图片原色</button></div><small class="source-hint">{{ colorSource === 'personal' ? '只使用你启用的实物豆色。' : '从图片提取主要颜色，不保证对应手头的豆子。' }}</small></div>
+          <button v-if="sourceUrl || patternUrl || selectedFile" class="clear-image-button" type="button" @click="clearImage">清除图片</button>
+          <div class="setting"><span>颜色来源</span><div class="source-switch" role="group" aria-label="图案颜色来源"><button type="button" :class="{ active: colorSource === 'image' }" @click="setColorSource('image')">图片原色</button><button type="button" :class="{ active: colorSource === 'personal' }" @click="setColorSource('personal')">个人色库</button></div><small class="source-hint">{{ colorSource === 'personal' ? '只使用你启用的实物豆色。' : '从图片提取主要颜色，不保证对应手头的豆子。' }}</small></div>
           <label class="setting"><span>图案宽度</span><div class="range-row"><input v-model.number="columns" type="range" min="16" max="256"/><input v-model.number="columns" class="number-input" type="number" min="16" max="256" aria-label="图案宽度数值" @change="columns = Math.max(16, Math.min(256, columns || 16))"/><span>颗</span></div></label>
           <label v-if="colorSource === 'image'" class="setting"><span>图片颜色数量</span><div class="range-row"><input v-model.number="colorLimit" type="range" min="4" max="128"/><input v-model.number="colorLimit" class="number-input" type="number" min="4" max="128" aria-label="图片颜色数量" @change="colorLimit = Math.max(4, Math.min(128, Math.round(colorLimit || 4)))"/><span>色</span></div></label>
           <div class="setting active-colors"><span>{{ colorSource === 'personal' ? '当前可用豆色' : '图片颜色上限' }}</span><b>{{ colorSource === 'personal' ? enabledPalette.length : colorLimit }} 色</b><small>{{ colorSource === 'personal' ? '图案只会使用下方启用的颜色' : '实际用色数以图案中出现的颜色为准' }}</small></div>
@@ -846,7 +888,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
           <button class="download" :disabled="!patternUrl" @click="download">导出拼豆图 ↓</button>
           <p v-if="error" class="error">{{ error }}</p>
         </aside>
-        <section class="preview"><div v-if="patternUrl" class="images"><figure><figcaption>生成图 · {{ renderedColumns }} × {{ rows }}{{ showBeadStyle ? ' · 拼豆颗粒示意' : '' }}</figcaption><img :src="patternUrl" alt="生成的拼豆格图"/></figure><figure v-if="sourceUrl"><figcaption>原始图片 <button v-if="colorSource === 'personal'" type="button" class="sample-button" :class="{ active: samplingMode }" @click="toggleSampling">{{ samplingMode ? '点击图片取色中…' : '从原图取色' }}</button></figcaption><img :src="sourceUrl" alt="上传的原始图片" :class="{ sampling: samplingMode }" @click="pickImageColor"/></figure></div><div v-else class="empty"><span>▦</span><b>你的拼豆图会出现在这里</b><small>上传图片开始制作</small></div>
+        <section class="preview"><div v-if="patternUrl || sourceUrl" class="images"><figure class="generated-figure"><figcaption>生成图{{ patternUrl ? ` · ${renderedColumns} × ${rows}${showBeadStyle ? ' · 拼豆颗粒示意' : ''}` : '' }}</figcaption><img v-if="patternUrl" :src="patternUrl" alt="生成的拼豆格图"/><div v-else class="pattern-unavailable"><span>▦</span><b>暂时无法生成图案</b><small>{{ colorSource === 'personal' ? '请先在下方色板中添加并启用至少一种拼豆颜色。' : '图片正在处理中，请稍候。' }}</small></div></figure><figure v-if="sourceUrl"><figcaption>原始图片 <button v-if="colorSource === 'personal'" type="button" class="sample-button" :class="{ active: samplingMode }" @click="toggleSampling">{{ samplingMode ? '点击图片取色中…' : '从原图取色' }}</button></figcaption><img :src="sourceUrl" alt="上传的原始图片" :class="{ sampling: samplingMode }" @click="pickImageColor"/></figure></div><div v-else class="empty"><span>▦</span><b>你的拼豆图会出现在这里</b><small>上传图片开始制作</small></div>
           <div v-if="samplingColor" class="mapping-tools"><p><i :style="{ background: samplingColor }"></i> 原图颜色 {{ samplingColor }}，选择你手头最接近的豆色：</p><div class="mapping-swatches"><button v-for="color in enabledPalette" :key="color.id" type="button" @click="assignSampleTo(color)"><i :style="{ background: color.hex }"></i>{{ color.code }}</button></div></div>
           <div v-if="colorSource === 'personal' && colorOverrides.length" class="mapping-tools saved-mappings"><strong>手动颜色映射</strong><span v-for="mapping in colorOverrides" :key="mapping.sourceHex" class="mapping-chip"><i :style="{ background: mapping.sourceHex }"></i>{{ mapping.sourceHex }} → <i :style="{ background: palette.find(color => color.hex === mapping.targetHex)?.hex }"></i>{{ palette.find(color => color.hex === mapping.targetHex)?.code }}<button type="button" :aria-label="`移除 ${mapping.sourceHex} 映射`" @click="clearSampleMapping(mapping.sourceHex)">×</button></span></div>
         </section>
@@ -861,6 +903,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
       <section v-if="beads.length" class="palette"><h2>拼豆用量清单 <small>共 {{ totalBeads }} 颗 · {{ renderedColumns }} × {{ rows }} 格</small></h2><span v-for="bead in beads" :key="bead.code"><i :style="{background:bead.hex}"></i>{{ bead.code }} · {{ bead.name }} · {{ formatColor(bead.hex) }} · {{ bead.count }} 颗</span></section>
     </main>
     <footer><span class="tool-footer-brand">{{ profile.name }} · DIY Studio</span><div class="tool-footer-links"><a :href="`mailto:${profile.email}`">{{ profile.email }}</a><a :href="`mailto:${profile.email}?subject=${encodeURIComponent('拼豆工具改进建议 / 问题反馈')}`">改进建议 · 问题反馈 ↗</a><RouterLink to="/?section=diy">返回功能目录</RouterLink></div></footer>
+    <div v-if="toastMessage" class="tool-toast" role="status" aria-live="polite"><span>{{ toastMessage }}</span><button type="button" aria-label="关闭提示" @click="toastMessage = ''">×</button></div>
     <div v-if="infoDialogOpen" class="info-backdrop" role="presentation" @click.self="infoDialogOpen = false">
       <section class="info-dialog" role="dialog" aria-modal="true" aria-labelledby="info-title">
         <header class="info-dialog-heading"><div><p>TOOL GUIDE</p><h2 id="info-title">图片转拼豆 · 功能简介</h2></div><button type="button" aria-label="关闭功能简介" @click="infoDialogOpen = false">×</button></header>
@@ -916,5 +959,9 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
 @media(max-width:760px){.header-actions{gap:5px}.header-action{padding:7px 9px;font-size:11px}.header-actions .local-note{display:none}.info-backdrop{padding:10px}.info-dialog-heading{padding:14px 16px!important}.info-dialog-content{padding:2px 17px 8px}.info-dialog-footer{align-items:flex-start!important;gap:10px;flex-direction:column}}
 .brand{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}.brand img{width:34px;height:34px;flex:none;border:2px solid #fff;border-radius:50%;object-fit:cover;box-shadow:0 2px 8px #263b4722}.brand .brand-name{margin:0;color:#263b47;font:600 17px Georgia,serif;letter-spacing:0}.brand .brand-divider{margin:0;color:#9aabb0;font:14px sans-serif}.brand .brand-label{margin:0;color:#6a90a6;font:10px monospace;letter-spacing:.1em}.bead-app footer{height:auto;min-height:72px;padding-top:15px;padding-bottom:15px;gap:16px}.tool-footer-brand{color:#fff;font:600 14px Georgia,serif}.tool-footer-links{display:flex;align-items:center;justify-content:flex-end;gap:18px;flex-wrap:wrap}.tool-footer-links a{color:#b7cbd2;font-size:12px}.tool-footer-links a:hover{color:#fff}.bead-app footer .router-link-active{color:#b7cbd2}
 .author-mark-toggle{margin:10px 0 18px}.author-mark-toggle span{display:flex;flex-direction:column;gap:4px}.author-mark-toggle small{color:#77877c;font-size:11px}
+.tool-toast{position:fixed;z-index:13000;top:calc(18px + env(safe-area-inset-top));left:50%;display:flex;align-items:center;gap:16px;width:max-content;max-width:min(560px,calc(100vw - 28px));padding:13px 15px 13px 18px;border:1px solid #6a90a655;border-radius:14px;background:#fffaf8;color:#263b47;box-shadow:0 12px 34px #17252d35;transform:translateX(-50%);animation:toast-in .2s ease-out}.tool-toast span{font-size:13px;line-height:1.5}.tool-toast button{width:25px;height:25px;flex:none;border:0;border-radius:50%;background:#edf2f3;color:#52636a;font-size:18px;line-height:1;cursor:pointer}@keyframes toast-in{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
+.clear-image-button{width:100%;margin-top:9px;padding:8px 12px;border:1px solid #263b4720;border-radius:999px;background:#fff;color:#65737a;font-size:12px;cursor:pointer;transition:border-color .16s ease,background .16s ease,color .16s ease}.clear-image-button:hover{border-color:#c78383;background:#fff7f6;color:#9a5d5d}
+.pattern-unavailable{width:100%;min-height:220px;padding:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border:1px dashed #6a90a655;border-radius:14px;background:#fffaf8;color:#52636a;text-align:center}.pattern-unavailable>span{color:#9bb4bf;font-size:42px}.pattern-unavailable b{font-size:14px}.pattern-unavailable small{max-width:240px;color:#77877c;font-size:11px;line-height:1.6}.generated-figure{flex:1;min-width:220px}.generated-figure>img{width:100%;height:auto;max-height:420px;object-fit:contain}
+.sample-button,.mapping-tools{display:none!important}
 @media(max-width:760px){.bead-app header{height:auto;min-height:72px;padding:12px 16px;gap:10px;flex-wrap:wrap}.brand{gap:6px}.brand img{width:30px;height:30px}.brand .brand-name{font-size:15px}.brand .brand-label{font-size:9px}.bead-app footer{align-items:flex-start;flex-direction:column;padding:18px 20px}.tool-footer-links{justify-content:flex-start;gap:9px 16px}}
 </style>
