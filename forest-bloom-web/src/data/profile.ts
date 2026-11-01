@@ -8,7 +8,7 @@ export const profile = {
     { label: '城市足迹', value: '08' },
   ],
   githubUrl: 'https://github.com/',
-  email: 'hello@example.com',
+  email: 'abin_fu@foxmail.com',
   // 图片放在 public/images/profile/ 后，填写类似 '/images/profile/avatar.jpg' 的路径。
   avatarImage: '/images/profile/avatar.jpg',
   coverImage: '/images/profile/cover.webp',

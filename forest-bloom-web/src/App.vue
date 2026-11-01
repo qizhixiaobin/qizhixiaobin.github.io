@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
+import ToolFeaturePage from './views/ToolFeaturePage.vue'
 import { profile } from './data/profile'
 
-type Page = 'journey' | 'interests' | 'notes' | 'map'
+type Page = 'journey' | 'interests' | 'notes' | 'tools' | 'diy' | 'map'
 
-const activePage = ref<Page>('journey')
+const route = useRoute()
+const activePage = ref<Page>(route.query.section === 'diy' ? 'diy' : 'journey')
 const direction = ref<'forward' | 'back'>('forward')
+const toolText = ref('')
+const jsonText = ref('')
+const jsonMessage = ref('')
+const jsonError = ref(false)
 const pages: Array<{ id: Page; label: string; index: string }> = [
   { id: 'journey', label: '经历', index: '01' },
   { id: 'interests', label: '兴趣', index: '02' },
   { id: 'notes', label: '笔记', index: '03' },
+  { id: 'tools', label: 'DIY 工具', index: '04' },
+  { id: 'diy', label: 'DIY 功能', index: '05' },
 ]
 const activeLabel = computed(() => pages.find((page) => page.id === activePage.value)?.label)
 
@@ -19,10 +28,22 @@ function changePage(page: Page) {
   direction.value = next > current ? 'forward' : 'back'
   activePage.value = page
 }
+
+function formatJson() {
+  try {
+    jsonText.value = JSON.stringify(JSON.parse(jsonText.value), null, 2)
+    jsonMessage.value = '格式正确，已完成整理。'
+    jsonError.value = false
+  } catch {
+    jsonMessage.value = '格式有误，请检查 JSON 内容。'
+    jsonError.value = true
+  }
+}
 </script>
 
 <template>
-  <div class="app-shell">
+  <ToolFeaturePage v-if="route.name === 'bead-pattern'" />
+  <div v-else class="app-shell">
     <header class="site-header">
       <div class="profile-hero" :style="profile.coverImage ? { backgroundImage: `url(${profile.coverImage})` } : undefined">
         <span v-if="!profile.coverImage" class="cover-orb orb-blue" aria-hidden="true"></span>
@@ -85,6 +106,41 @@ function changePage(page: Page) {
             </div>
           </template>
 
+          <template v-else-if="activePage === 'tools'">
+            <div class="hero-copy compact"><p class="eyebrow">SMALL TOOLS, MADE FOR EVERYDAY</p><h1>把灵感变成<br />顺手好用的<em>小工具。</em></h1></div>
+            <div class="tools-grid">
+              <article class="tool-card">
+                <p class="tool-label">01 · TEXT</p>
+                <h2>文字计数</h2>
+                <p class="tool-description">快速统计字数、字符和行数。</p>
+                <textarea v-model="toolText" aria-label="输入要统计的文字" placeholder="在这里输入或粘贴文字……"></textarea>
+                <div class="text-metrics"><span><strong>{{ toolText.length }}</strong> 字符</span><span><strong>{{ toolText.trim() ? toolText.trim().split(/\\s+/).length : 0 }}</strong> 词</span><span><strong>{{ toolText ? toolText.split('\\n').length : 0 }}</strong> 行</span></div>
+                <button class="tool-button secondary" @click="toolText = ''">清空文字</button>
+              </article>
+              <article class="tool-card">
+                <p class="tool-label">02 · JSON</p>
+                <h2>JSON 格式化</h2>
+                <p class="tool-description">整理缩进并检查 JSON 格式是否正确。</p>
+                <textarea v-model="jsonText" aria-label="输入 JSON 文本" placeholder='例如：{"name":"Forest Bloom"}'></textarea>
+                <p v-if="jsonMessage" class="json-message" :class="{ error: jsonError }" role="status">{{ jsonMessage }}</p>
+                <div class="tool-actions"><button class="tool-button" @click="formatJson">格式化</button><button class="tool-button secondary" @click="jsonText = ''; jsonMessage = ''; jsonError = false">清空</button></div>
+              </article>
+            </div>
+          </template>
+
+          <template v-else-if="activePage === 'diy'">
+            <div class="hero-copy compact"><p class="eyebrow">CREATIVE TOOLS</p><h1>给想法一个<br />可以动手的<em>入口。</em></h1><p class="lead">这里收集更完整的创作工具，打开后将在独立页面中使用。</p></div>
+            <div class="diy-grid">
+              <RouterLink class="diy-card" to="/diy/bead-pattern">
+                <span class="diy-card-index">01 / IMAGE</span>
+                <span class="diy-card-icon" aria-hidden="true">▦</span>
+                <h2>图片转拼豆图</h2>
+                <p>把喜欢的图片转成拼豆创作参考图。</p>
+                <span class="diy-card-link">打开功能 <b>↗</b></span>
+              </RouterLink>
+            </div>
+          </template>
+
           <template v-else>
             <div class="hero-copy compact"><p class="eyebrow">PLACES, STORIES, WISHES</p><h1>把去过和想去的地方，<br />标成自己的<em>坐标。</em></h1></div>
             <div class="map-panel"><span class="pin pin-one">长春</span><span class="pin pin-two">上海</span><span class="pin pin-three">京都</span><div class="map-caption"><p>03 places collected</p><h2>脚步会记得，<em>心也会。</em></h2></div></div>
@@ -94,7 +150,7 @@ function changePage(page: Page) {
     </main>
 
     <footer>
-      <a class="mail" href="mailto:abin_fu@foxamil.com">abin_fu@foxamil.com <span>↗</span></a>
+      <a class="mail" href="mailto:{{ profile.email}}">{{ profile.email}}</a>
       <p class="copyright">© 2026 BLOOM</p>
     </footer>
   </div>
@@ -114,8 +170,10 @@ main { min-height: 650px; padding: 50px 0 72px; }.section-mark, .eyebrow, .copyr
 .card-grid { margin-top: 55px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }.soft-card { min-height: 230px; padding: 28px; border-radius: 20px; background: var(--mist); transition: transform .18s ease; }.soft-card:hover { transform: translateY(-4px); }.soft-card i { color: var(--petal); font-style: normal; }.soft-card p { margin: 35px 0 7px; }.soft-card span { display: block; color: #6a786f; margin-top: 12px; }
 .note-list { margin-top: 50px; border-top: 1px solid var(--line); }.note-list article { display: grid; grid-template-columns: 180px 1fr auto; align-items: center; min-height: 105px; border-bottom: 1px solid var(--line); }.note-list h2 { margin: 0; font: 600 24px 'Noto Serif SC', serif; }.note-list b { font-size: 23px; color: var(--moss); }
 .map-panel { height: 350px; margin-top: 47px; border-radius: 24px; position: relative; overflow: hidden; background: linear-gradient(125deg, #dce5d3 0%, #c5d5bc 40%, #e4d9ad 100%); }.map-panel::before, .map-panel::after { content: ''; position: absolute; inset: 15% 8%; border: 2px solid rgba(79,114,93,.18); border-radius: 45% 55% 43% 57%; transform: rotate(-12deg); }.map-panel::after { inset: 32% 22%; transform: rotate(25deg); }.pin { position: absolute; z-index: 1; padding: 8px 12px; border-radius: 999px; background: var(--ink); color: white; font-size: 13px; box-shadow: 0 8px 16px rgba(32,51,43,.16); }.pin-one { left: 22%; top: 31%; }.pin-two { left: 51%; top: 55%; }.pin-three { right: 20%; top: 22%; }.map-caption { position: absolute; z-index: 2; left: 28px; bottom: 24px; }.map-caption p { font: 11px 'DM Mono', monospace; }.map-caption h2 { margin: 7px 0 0; font: 600 25px 'Noto Serif SC', serif; }
+.tools-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 52px; }.tool-card { padding: 28px; border: 1px solid var(--line); border-radius: 20px; background: #fffdfb; }.tool-label { margin: 0; color: var(--moss); font: 11px 'DM Mono', monospace; letter-spacing: .08em; }.tool-card h2 { margin: 14px 0 0; font: 600 25px 'Noto Serif SC', serif; }.tool-description { margin: 8px 0 18px; color: #6a786f; font-size: 13px; }.tool-card textarea { display: block; width: 100%; min-height: 150px; resize: vertical; padding: 14px; border: 1px solid var(--line); border-radius: 12px; outline: none; background: var(--paper); color: var(--ink); font: 13px/1.7 'DM Mono', monospace; }.tool-card textarea:focus { border-color: var(--moss); box-shadow: 0 0 0 3px rgba(106,144,166,.12); }.text-metrics { display: flex; gap: 20px; padding: 15px 0; color: #6a786f; font-size: 12px; }.text-metrics strong { color: var(--ink); font: 600 17px 'DM Mono', monospace; }.tool-button { padding: 9px 15px; border: 1px solid var(--moss); border-radius: 999px; background: var(--moss); color: white; font-size: 12px; }.tool-button.secondary { background: transparent; color: var(--moss); }.tool-actions { display: flex; gap: 9px; margin-top: 15px; }.json-message { min-height: 18px; margin: 10px 0 0; color: var(--moss); font-size: 12px; }.json-message.error { color: #b65e5e; }
+.diy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; margin-top: 52px; }.diy-card { min-height: 260px; padding: 26px; position: relative; display: flex; flex-direction: column; align-items: flex-start; border: 1px solid var(--line); border-radius: 20px; background: linear-gradient(145deg, #fffdfb, var(--mist)); transition: transform .2s ease, box-shadow .2s ease; }.diy-card:hover { transform: translateY(-4px); box-shadow: 0 14px 30px rgba(38,59,71,.1); }.diy-card-index { color: var(--moss); font: 11px 'DM Mono', monospace; letter-spacing: .08em; }.diy-card-icon { width: 56px; height: 56px; margin-top: 28px; display: grid; place-items: center; border-radius: 16px; background: var(--petal); color: var(--ink); font-size: 30px; }.diy-card h2 { margin: 18px 0 0; font: 600 23px 'Noto Serif SC', serif; }.diy-card p { margin: 8px 0 20px; color: #6a786f; font-size: 13px; }.diy-card-link { margin-top: auto; color: var(--moss); font-size: 12px; }.diy-card-link b { margin-left: 6px; }
 footer { width: 100%; margin: 0; padding: 28px max(24px, calc((100% - 1160px) / 2)); display: flex; justify-content: space-between; align-items: center; gap: 20px; border: 0; border-top: 3px solid var(--petal); border-radius: 0; background: var(--ink); } .mail { color: white; font: 15px 'DM Mono', monospace; border-bottom: 1px solid var(--leaf); padding-bottom: 6px; }.mail span { margin-left: 8px; color: var(--petal); }.copyright { margin: 0; color: rgba(255,255,255,.58); }
 .slide-forward-enter-active, .slide-forward-leave-active, .slide-back-enter-active, .slide-back-leave-active { transition: all .42s cubic-bezier(.22, .61, .36, 1); }.slide-forward-enter-from, .slide-back-leave-to { opacity: 0; transform: translateX(52px); }.slide-forward-leave-to, .slide-back-enter-from { opacity: 0; transform: translateX(-52px); }
-@media (max-width: 760px) { main { width: min(100% - 28px, 1160px); }.profile-hero { min-height: 415px; padding: 34px 22px 27px; align-items: flex-end; gap: 0; }.hero-shade { background: linear-gradient(180deg, rgba(15,27,35,.14), rgba(15,27,35,.72)); }.profile-details { width: 100%; margin-right: 0; padding-top: 112px; }.name-line h1 { font-size: 31px; }.profile-bio { font-size: 13px; }.profile-stats div { min-width: 0; flex: 1; padding: 0 8px; }.profile-actions { margin-top: 18px; }.avatar { position: absolute; right: 22px; bottom: auto; top: 27px; width: 94px; flex-basis: 94px; font-size: 29px; }.profile-nav { padding: 0 10px; overflow-x: auto; }.profile-nav button { white-space: nowrap; padding: 10px 11px; }.timeline, .card-grid { grid-template-columns: 1fr; }.timeline article { min-height: 155px; border-right: 0; border-bottom: 1px solid var(--line); padding: 22px 0 !important; }.featured { margin: 0 -14px; padding: 26px 14px !important; }.note-list article { grid-template-columns: 1fr auto; gap: 10px; padding: 22px 0; }.note-list span { grid-column: 1 / -1; }.note-list h2 { font-size: 20px; } footer { padding: 24px 22px; align-items: flex-start; flex-direction: column; gap: 14px; }.hero-copy h1 { font-size: clamp(38px, 11vw, 58px); } }
+@media (max-width: 760px) { main { width: min(100% - 28px, 1160px); }.profile-hero { min-height: 415px; padding: 34px 22px 27px; align-items: flex-end; gap: 0; }.hero-shade { background: linear-gradient(180deg, rgba(15,27,35,.14), rgba(15,27,35,.72)); }.profile-details { width: 100%; margin-right: 0; padding-top: 112px; }.name-line h1 { font-size: 31px; }.profile-bio { font-size: 13px; }.profile-stats div { min-width: 0; flex: 1; padding: 0 8px; }.profile-actions { margin-top: 18px; }.avatar { position: absolute; right: 22px; bottom: auto; top: 27px; width: 94px; flex-basis: 94px; font-size: 29px; }.profile-nav { padding: 0 10px; overflow-x: auto; }.profile-nav button { white-space: nowrap; padding: 10px 11px; }.timeline, .card-grid, .tools-grid, .diy-grid { grid-template-columns: 1fr; }.timeline article { min-height: 155px; border-right: 0; border-bottom: 1px solid var(--line); padding: 22px 0 !important; }.featured { margin: 0 -14px; padding: 26px 14px !important; }.note-list article { grid-template-columns: 1fr auto; gap: 10px; padding: 22px 0; }.note-list span { grid-column: 1 / -1; }.note-list h2 { font-size: 20px; } footer { padding: 24px 22px; align-items: flex-start; flex-direction: column; gap: 14px; }.hero-copy h1 { font-size: clamp(38px, 11vw, 58px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
 </style>
