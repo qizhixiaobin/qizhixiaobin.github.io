@@ -11,6 +11,7 @@
 | [04-map.md](./design/04-map.md) | 地图 | 原型已完成 |
 | [05-shell-and-footer.md](./design/05-shell-and-footer.md) | Header、切换动画、Footer 与部署 | 原型已完成 |
 | [06-diy-tools.md](./design/06-diy-tools.md) | 轻量工具、DIY 功能目录与独立功能页 | 设计确定，首版实现中 |
+| [07-japanese-study.md](./design/07-japanese-study.md) | Anki 文本导入、日语词汇与语法复习 | 首版实现 |
 
 ## 开发顺序
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import JapaneseStudyPage from './views/JapaneseStudyPage.vue'
 import ToolFeaturePage from './views/ToolFeaturePage.vue'
 import { profile } from './data/profile'
 
@@ -21,6 +22,10 @@ const pages: Array<{ id: Page; label: string; index: string }> = [
   { id: 'diy', label: 'DIY 功能', index: '05' },
 ]
 const activeLabel = computed(() => pages.find((page) => page.id === activePage.value)?.label)
+
+watch(() => route.query.section, (section) => {
+  if (section === 'diy') activePage.value = 'diy'
+})
 
 function changePage(page: Page) {
   const next = pages.findIndex((item) => item.id === page)
@@ -43,6 +48,7 @@ function formatJson() {
 
 <template>
   <ToolFeaturePage v-if="route.name === 'bead-pattern'" />
+  <JapaneseStudyPage v-else-if="route.name === 'japanese-study'" />
   <div v-else class="app-shell">
     <header class="site-header">
       <div class="profile-hero" :style="profile.coverImage ? { backgroundImage: `url(${profile.coverImage})` } : undefined">
@@ -138,6 +144,13 @@ function formatJson() {
                 <p>把喜欢的图片转成拼豆创作参考图。</p>
                 <span class="diy-card-link">打开功能 <b>↗</b></span>
               </RouterLink>
+              <RouterLink class="diy-card" to="/diy/japanese-study">
+                <span class="diy-card-index">02 / LANGUAGE</span>
+                <span class="diy-card-icon" aria-hidden="true">あ</span>
+                <h2>日语词汇与语法</h2>
+                <p>按汉字、假名或中文意思查词，浏览词汇与语法并记录学习状态。</p>
+                <span class="diy-card-link">开始学习 <b>↗</b></span>
+              </RouterLink>
             </div>
           </template>
 
@@ -175,5 +188,62 @@ main { min-height: 650px; padding: 50px 0 72px; }.section-mark, .eyebrow, .copyr
 footer { width: 100%; margin: 0; padding: 28px max(24px, calc((100% - 1160px) / 2)); display: flex; justify-content: space-between; align-items: center; gap: 20px; border: 0; border-top: 3px solid var(--petal); border-radius: 0; background: var(--ink); } .mail { color: white; font: 15px 'DM Mono', monospace; border-bottom: 1px solid var(--leaf); padding-bottom: 6px; }.mail span { margin-left: 8px; color: var(--petal); }.copyright { margin: 0; color: rgba(255,255,255,.58); }
 .slide-forward-enter-active, .slide-forward-leave-active, .slide-back-enter-active, .slide-back-leave-active { transition: all .42s cubic-bezier(.22, .61, .36, 1); }.slide-forward-enter-from, .slide-back-leave-to { opacity: 0; transform: translateX(52px); }.slide-forward-leave-to, .slide-back-enter-from { opacity: 0; transform: translateX(-52px); }
 @media (max-width: 760px) { main { width: min(100% - 28px, 1160px); }.profile-hero { min-height: 415px; padding: 34px 22px 27px; align-items: flex-end; gap: 0; }.hero-shade { background: linear-gradient(180deg, rgba(15,27,35,.14), rgba(15,27,35,.72)); }.profile-details { width: 100%; margin-right: 0; padding-top: 112px; }.name-line h1 { font-size: 31px; }.profile-bio { font-size: 13px; }.profile-stats div { min-width: 0; flex: 1; padding: 0 8px; }.profile-actions { margin-top: 18px; }.avatar { position: absolute; right: 22px; bottom: auto; top: 27px; width: 94px; flex-basis: 94px; font-size: 29px; }.profile-nav { padding: 0 10px; overflow-x: auto; }.profile-nav button { white-space: nowrap; padding: 10px 11px; }.timeline, .card-grid, .tools-grid, .diy-grid { grid-template-columns: 1fr; }.timeline article { min-height: 155px; border-right: 0; border-bottom: 1px solid var(--line); padding: 22px 0 !important; }.featured { margin: 0 -14px; padding: 26px 14px !important; }.note-list article { grid-template-columns: 1fr auto; gap: 10px; padding: 22px 0; }.note-list span { grid-column: 1 / -1; }.note-list h2 { font-size: 20px; } footer { padding: 24px 22px; align-items: flex-start; flex-direction: column; gap: 14px; }.hero-copy h1 { font-size: clamp(38px, 11vw, 58px); } }
+@media (max-width: 520px) {
+  .site-header { overflow: visible; }
+  .profile-hero { min-height: 390px; padding: 30px 18px 22px; }
+  .profile-details { padding-top: 108px; text-align: left; }
+  .name-line { justify-content: flex-start; }
+  .name-line h1 { font-size: clamp(27px, 8vw, 32px); }
+  .profile-bio { margin-right: 0; font-size: 12px; }
+  .profile-meta,.profile-stats,.profile-actions { justify-content: flex-start; }
+  .profile-stats { margin-top: 18px; }
+  .profile-stats div { padding: 0 9px; }
+  .profile-stats div:first-child { padding-left: 0; }
+  .profile-stats strong { font-size: 18px; }
+  .profile-actions { flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .profile-actions a { min-height: 40px; display: inline-flex; align-items: center; padding: 8px 11px; }
+  .avatar { top: 20px; right: 18px; width: 82px; flex-basis: 82px; border-width: 4px; }
+  .profile-nav { min-height: 58px; gap: 2px; padding: 0 8px; scrollbar-width: thin; scroll-snap-type: x proximity; }
+  .profile-nav button { min-height: 44px; flex: 0 0 auto; padding: 10px 10px; scroll-snap-align: start; font-size: 12px; }
+  .profile-nav small { margin-right: 4px; font-size: 9px; }
+  main { width: calc(100% - 32px); min-height: 0; padding: 32px 0 48px; }
+  .section-mark { margin-bottom: 28px; font-size: 10px; }
+  .page-content { min-height: 0; }
+  .hero-copy h1 { font-size: clamp(34px, 10vw, 48px); line-height: 1.24; }
+  .hero-copy .eyebrow { font-size: 9px; letter-spacing: .07em; }
+  .lead { margin-top: 18px; font-size: 14px; }
+  .timeline,.card-grid,.tools-grid,.diy-grid,.note-list { margin-top: 32px; }
+  .timeline article { min-height: 0; padding: 18px 0 !important; }
+  .timeline p { margin: 15px 0 7px; }
+  .timeline h2,.soft-card h2 { font-size: 20px; }
+  .featured { margin: 0 -8px; padding: 20px 12px !important; }
+  .soft-card,.tool-card,.diy-card { padding: 20px; border-radius: 16px; }
+  .soft-card { min-height: 190px; }
+  .soft-card p { margin-top: 22px; }
+  .note-list article { min-height: 88px; grid-template-columns: minmax(0,1fr) auto; }
+  .note-list h2 { font-size: 18px; line-height: 1.45; }
+  .map-panel { height: min(62vh, 330px); min-height: 250px; margin-top: 30px; border-radius: 18px; }
+  .map-caption { left: 16px; bottom: 16px; }
+  .map-caption h2 { font-size: 20px; }
+  .pin { padding: 7px 10px; font-size: 11px; }
+  .tool-card h2 { font-size: 22px; }
+  .tool-card textarea { min-height: 130px; font-size: 15px; }
+  .text-metrics { justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .diy-card { min-height: 230px; }
+  footer { padding: 20px 16px; }
+  .mail { max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
+}
+@media (max-width: 360px) {
+  .profile-hero { min-height: 405px; padding-right: 14px; padding-left: 14px; }
+  .profile-details { padding-top: 100px; }
+  .profile-actions a { font-size: 11px; }
+  .avatar { right: 14px; width: 74px; flex-basis: 74px; }
+  .profile-nav { padding-right: 4px; padding-left: 4px; }
+  .profile-nav button { padding-right: 8px; padding-left: 8px; font-size: 11px; }
+  main { width: calc(100% - 24px); }
+  .hero-copy h1 { font-size: 32px; }
+  .tool-card,.diy-card { padding: 16px; }
+  .map-caption h2 { font-size: 18px; }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
 </style>

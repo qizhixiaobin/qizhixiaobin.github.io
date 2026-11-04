@@ -18,6 +18,7 @@ type SavedWorkspace = {
   beadLabelMode: 'export' | 'name' | 'code'
 }
 const sourceUrl = ref('')
+const previewElement = ref<HTMLElement | null>(null)
 const infoDialogOpen = ref(false)
 const toastMessage = ref('')
 const selectedFile = ref<File | null>(null)
@@ -145,13 +146,20 @@ function loadImage(file: File) {
   const request = ++renderRequest
   error.value = ''
   if (!file.type.startsWith('image/')) { error.value = '请选择图片文件。'; return }
-  if (sourceUrl.value) URL.revokeObjectURL(sourceUrl.value)
+  if (sourceUrl.value.startsWith('blob:')) URL.revokeObjectURL(sourceUrl.value)
   if (patternUrl.value) URL.revokeObjectURL(patternUrl.value)
-  sourceUrl.value = URL.createObjectURL(file)
+  const fileUrl = URL.createObjectURL(file)
+  sourceUrl.value = fileUrl
   const image = new Image()
   image.onload = () => {
     if (request !== renderRequest) return
-    savedSourceImage.value = compressSourceImage(image)
+    const normalizedSource = compressSourceImage(image, image.naturalWidth, image.naturalHeight)
+    savedSourceImage.value = normalizedSource
+    if (sourceUrl.value.startsWith('blob:')) {
+      URL.revokeObjectURL(sourceUrl.value)
+      sourceUrl.value = normalizedSource
+    }
+    scrollPreviewOnMobile()
     if (colorSource.value === 'personal' && !enabledPalette.value.length) {
       patternUrl.value = ''
       beads.value = []
@@ -241,14 +249,37 @@ function loadImage(file: File) {
     saveWorkspace()
   }
   image.onerror = () => { if (request === renderRequest) error.value = '图片读取失败，请换一张图片。' }
-  image.src = sourceUrl.value
+  if (typeof createImageBitmap === 'function') {
+    void createImageBitmap(file, { imageOrientation: 'from-image' }).then(bitmap => {
+      try {
+        if (request !== renderRequest) {
+          URL.revokeObjectURL(fileUrl)
+          return
+        }
+        const normalizedSource = compressSourceImage(bitmap, bitmap.width, bitmap.height)
+        URL.revokeObjectURL(fileUrl)
+        sourceUrl.value = normalizedSource
+        image.src = normalizedSource
+      } catch {
+        if (request === renderRequest) image.src = fileUrl
+        else URL.revokeObjectURL(fileUrl)
+      } finally {
+        bitmap.close()
+      }
+    }).catch(() => {
+      if (request === renderRequest) image.src = fileUrl
+      else URL.revokeObjectURL(fileUrl)
+    })
+  } else {
+    image.src = fileUrl
+  }
 }
 
-function compressSourceImage(image: HTMLImageElement) {
-  const ratio = Math.min(1, 1200 / Math.max(image.naturalWidth, image.naturalHeight))
+function compressSourceImage(image: CanvasImageSource, width: number, height: number) {
+  const ratio = Math.min(1, 1200 / Math.max(width, height))
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio))
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio))
+  canvas.width = Math.max(1, Math.round(width * ratio))
+  canvas.height = Math.max(1, Math.round(height * ratio))
   const context = canvas.getContext('2d')!
   context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height)
   context.drawImage(image, 0, 0, canvas.width, canvas.height)
@@ -735,6 +766,10 @@ function escapeXml(value: string) {
 }
 
 function onFile(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (file) { selectedFile.value = file; loadImage(file) } }
+function scrollPreviewOnMobile() {
+  if (!window.matchMedia('(max-width: 760px)').matches) return
+  nextTick(() => requestAnimationFrame(() => previewElement.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })))
+}
 function hexToRgb(hex: string): [number, number, number] {
   const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex)
   return match ? [parseInt(match[1]!, 16), parseInt(match[2]!, 16), parseInt(match[3]!, 16)] : [0, 0, 0]
@@ -868,12 +903,12 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
 
 <template>
   <div class="bead-app">
-    <header><RouterLink to="/?section=diy" class="brand"><img :src="profile.avatarImage" alt=""/><span class="brand-name">{{ profile.name }}</span><span class="brand-divider">·</span><span class="brand-label">DIY STUDIO</span></RouterLink><div class="header-actions"><button type="button" class="header-action info-action" @click="infoDialogOpen = true">功能简介</button><button type="button" class="header-action reset-action" @click="resetLocalData">清除缓存并重置</button><span class="local-note">图片与设置保存在本机</span></div></header>
+    <header><RouterLink to="/?section=diy" class="brand"><img :src="profile.avatarImage" alt=""/><span class="brand-name">{{ profile.name }}</span><span class="brand-divider">·</span><span class="brand-label">DIY STUDIO</span></RouterLink><div class="header-actions"><button type="button" class="header-action info-action" @click="infoDialogOpen = true">功能简介</button><button type="button" class="header-action reset-action" @click="resetLocalData">清除缓存并重置</button><span class="local-note">图片与设置保存在本机</span><RouterLink to="/?section=diy" class="header-back">← 返回 DIY 功能</RouterLink></div></header>
     <main>
       <section class="intro"><p>IMAGE TO BEADS</p><h1>把喜欢的图片，<em>织成拼豆。</em></h1><span>{{ colorSource === 'personal' ? '用你手头的拼豆色板匹配图片，并生成对应的用量清单。' : '保留图片的主要色彩，并生成颜色用量清单。' }}</span></section>
       <section class="workspace">
         <aside class="controls">
-          <label class="upload"><input type="file" accept="image/*" @change="onFile"/><b>＋</b><strong>选择一张图片</strong><small>PNG、JPG、WebP 等格式</small></label>
+          <label class="upload"><input type="file" accept="image/*" @change="onFile"/><b>＋</b><strong>{{ selectedFile ? '图片已选择' : '选择一张图片' }}</strong><small class="upload-file-name" :title="selectedFile?.name">{{ selectedFile?.name ?? 'PNG、JPG、WebP 等格式' }}</small></label>
           <button v-if="sourceUrl || patternUrl || selectedFile" class="clear-image-button" type="button" @click="clearImage">清除图片</button>
           <div class="setting"><span>颜色来源</span><div class="source-switch" role="group" aria-label="图案颜色来源"><button type="button" :class="{ active: colorSource === 'image' }" @click="setColorSource('image')">图片原色</button><button type="button" :class="{ active: colorSource === 'personal' }" @click="setColorSource('personal')">个人色库</button></div><small class="source-hint">{{ colorSource === 'personal' ? '只使用你启用的实物豆色。' : '从图片提取主要颜色，不保证对应手头的豆子。' }}</small></div>
           <label class="setting"><span>图案宽度</span><div class="range-row"><input v-model.number="columns" type="range" min="16" max="256"/><input v-model.number="columns" class="number-input" type="number" min="16" max="256" aria-label="图案宽度数值" @change="columns = Math.max(16, Math.min(256, columns || 16))"/><span>颗</span></div></label>
@@ -888,7 +923,7 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
           <button class="download" :disabled="!patternUrl" @click="download">导出拼豆图 ↓</button>
           <p v-if="error" class="error">{{ error }}</p>
         </aside>
-        <section class="preview"><div v-if="patternUrl || sourceUrl" class="images"><figure class="generated-figure"><figcaption>生成图{{ patternUrl ? ` · ${renderedColumns} × ${rows}${showBeadStyle ? ' · 拼豆颗粒示意' : ''}` : '' }}</figcaption><img v-if="patternUrl" :src="patternUrl" alt="生成的拼豆格图"/><div v-else class="pattern-unavailable"><span>▦</span><b>暂时无法生成图案</b><small>{{ colorSource === 'personal' ? '请先在下方色板中添加并启用至少一种拼豆颜色。' : '图片正在处理中，请稍候。' }}</small></div></figure><figure v-if="sourceUrl"><figcaption>原始图片 <button v-if="colorSource === 'personal'" type="button" class="sample-button" :class="{ active: samplingMode }" @click="toggleSampling">{{ samplingMode ? '点击图片取色中…' : '从原图取色' }}</button></figcaption><img :src="sourceUrl" alt="上传的原始图片" :class="{ sampling: samplingMode }" @click="pickImageColor"/></figure></div><div v-else class="empty"><span>▦</span><b>你的拼豆图会出现在这里</b><small>上传图片开始制作</small></div>
+        <section ref="previewElement" class="preview"><div v-if="patternUrl || sourceUrl" class="images"><figure class="generated-figure"><figcaption>生成图{{ patternUrl ? ` · ${renderedColumns} × ${rows}${showBeadStyle ? ' · 拼豆颗粒示意' : ''}` : '' }}</figcaption><img v-if="patternUrl" :src="patternUrl" alt="生成的拼豆格图"/><div v-else class="pattern-unavailable"><span>▦</span><b>暂时无法生成图案</b><small>{{ colorSource === 'personal' ? '请先在下方色板中添加并启用至少一种拼豆颜色。' : '图片正在处理中，请稍候。' }}</small></div></figure><figure v-if="sourceUrl"><figcaption>原始图片 <button v-if="colorSource === 'personal'" type="button" class="sample-button" :class="{ active: samplingMode }" @click="toggleSampling">{{ samplingMode ? '点击图片取色中…' : '从原图取色' }}</button></figcaption><img :src="sourceUrl" alt="上传的原始图片" :class="{ sampling: samplingMode }" @click="pickImageColor"/></figure></div><div v-else class="empty"><span>▦</span><b>你的拼豆图会出现在这里</b><small>上传图片开始制作</small></div>
           <div v-if="samplingColor" class="mapping-tools"><p><i :style="{ background: samplingColor }"></i> 原图颜色 {{ samplingColor }}，选择你手头最接近的豆色：</p><div class="mapping-swatches"><button v-for="color in enabledPalette" :key="color.id" type="button" @click="assignSampleTo(color)"><i :style="{ background: color.hex }"></i>{{ color.code }}</button></div></div>
           <div v-if="colorSource === 'personal' && colorOverrides.length" class="mapping-tools saved-mappings"><strong>手动颜色映射</strong><span v-for="mapping in colorOverrides" :key="mapping.sourceHex" class="mapping-chip"><i :style="{ background: mapping.sourceHex }"></i>{{ mapping.sourceHex }} → <i :style="{ background: palette.find(color => color.hex === mapping.targetHex)?.hex }"></i>{{ palette.find(color => color.hex === mapping.targetHex)?.code }}<button type="button" :aria-label="`移除 ${mapping.sourceHex} 映射`" @click="clearSampleMapping(mapping.sourceHex)">×</button></span></div>
         </section>
@@ -955,8 +990,8 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
 @media(max-width:700px){.cell-coordinate{order:4;max-width:100%;overflow:hidden;text-overflow:ellipsis}.overview-map{right:8px;bottom:8px;width:120px;height:72px}.coordinate-ruler-top,.coordinate-ruler-left{font-size:9px}}
 .cell-coordinate{display:flex;align-items:center;gap:7px}.coordinate-bead{display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border-radius:999px;background:#fff;color:#263b47}.coordinate-bead i{width:13px;height:13px;flex:none;border:1px solid #263b4730;border-radius:50%}.coordinate-bead.hidden{opacity:.58;text-decoration:line-through}.bead-label-format{display:flex;align-items:center;gap:6px;margin:0 0 8px;padding:0;border:0}.bead-label-format legend{margin-right:3px;color:#5e6d73;font-size:10px}.bead-label-format label{cursor:pointer}.bead-label-format input{position:absolute;opacity:0}.bead-label-format label span{display:block;padding:5px 8px;border:1px solid #263b4720;border-radius:999px;background:#fff;color:#46575e;font-size:10px}.bead-label-format input:checked+span{border-color:#6a90a6;background:#edf2f3;color:#263b47;box-shadow:inset 0 0 0 1px #6a90a6}.bead-label-format input:focus-visible+span{outline:2px solid #263b47;outline-offset:2px}
 .bead-mode-view-options{display:flex;align-items:center;gap:6px}.bead-mode-view-options label{display:flex;align-items:center;gap:5px;padding:6px 9px;border:1px solid #263b4720;border-radius:999px;background:#fff;color:#334b56;font-size:11px;white-space:nowrap;cursor:pointer}.bead-mode-view-options input{margin:0;accent-color:#6a90a6}
-.header-actions{display:flex;align-items:center;gap:9px}.header-action{padding:8px 12px;border:1px solid #263b4722;border-radius:999px;background:#fffaf8;color:#263b47;font-size:12px;cursor:pointer}.header-action:hover{border-color:#6a90a6;background:#edf2f3}.reset-action{color:#9a5d5d}.info-backdrop{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;padding:16px;background:#17252dcc;backdrop-filter:blur(5px)}.info-dialog{display:flex;flex-direction:column;width:min(720px,100%);max-height:min(86vh,850px);overflow:hidden;border:1px solid #263b4720;border-radius:20px;background:#fffaf8;color:#263b47;box-shadow:0 24px 80px #101a1f55}.info-dialog-heading{height:auto!important;min-height:84px;padding:16px 22px!important;border-bottom:1px solid #263b471c;background:#fffaf8}.info-dialog-heading p{margin:0 0 5px;color:#6a90a6;font:10px monospace;letter-spacing:.14em}.info-dialog-heading h2{margin:0;font:600 23px Georgia,serif}.info-dialog-heading button{width:34px;height:34px;border:1px solid #263b4720;border-radius:50%;background:#fff;color:#52636a;font-size:23px;cursor:pointer}.info-dialog-content{overflow:auto;padding:4px 24px 12px}.info-dialog-content section{padding:14px 0;border-bottom:1px solid #263b4714}.info-dialog-content h3{margin:0 0 8px;color:#52798e;font-size:14px}.info-dialog-content ul{margin:0;padding-left:19px;color:#516168;font-size:12px;line-height:1.75}.info-dialog-footer{height:auto!important;min-height:64px;padding:11px 20px!important;border-top:1px solid #263b4718!important;background:#f1f5f5!important;color:#69777c!important}.info-dialog-footer span{font-size:11px;line-height:1.5}.info-dialog-footer button{padding:8px 15px;border:0;border-radius:999px;background:#263b47;color:#fff;font-size:12px;white-space:nowrap;cursor:pointer}
-@media(max-width:760px){.header-actions{gap:5px}.header-action{padding:7px 9px;font-size:11px}.header-actions .local-note{display:none}.info-backdrop{padding:10px}.info-dialog-heading{padding:14px 16px!important}.info-dialog-content{padding:2px 17px 8px}.info-dialog-footer{align-items:flex-start!important;gap:10px;flex-direction:column}}
+.header-actions{display:flex;align-items:center;gap:9px}.header-back{color:#5e7580;font-size:13px;white-space:nowrap}.header-back:hover{color:#263b47}.header-action{padding:8px 12px;border:1px solid #263b4722;border-radius:999px;background:#fffaf8;color:#263b47;font-size:12px;cursor:pointer}.header-action:hover{border-color:#6a90a6;background:#edf2f3}.reset-action{color:#9a5d5d}.info-backdrop{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;padding:16px;background:#17252dcc;backdrop-filter:blur(5px)}.info-dialog{display:flex;flex-direction:column;width:min(720px,100%);max-height:min(86vh,850px);overflow:hidden;border:1px solid #263b4720;border-radius:20px;background:#fffaf8;color:#263b47;box-shadow:0 24px 80px #101a1f55}.info-dialog-heading{height:auto!important;min-height:84px;padding:16px 22px!important;border-bottom:1px solid #263b471c;background:#fffaf8}.info-dialog-heading p{margin:0 0 5px;color:#6a90a6;font:10px monospace;letter-spacing:.14em}.info-dialog-heading h2{margin:0;font:600 23px Georgia,serif}.info-dialog-heading button{width:34px;height:34px;border:1px solid #263b4720;border-radius:50%;background:#fff;color:#52636a;font-size:23px;cursor:pointer}.info-dialog-content{overflow:auto;padding:4px 24px 12px}.info-dialog-content section{padding:14px 0;border-bottom:1px solid #263b4714}.info-dialog-content h3{margin:0 0 8px;color:#52798e;font-size:14px}.info-dialog-content ul{margin:0;padding-left:19px;color:#516168;font-size:12px;line-height:1.75}.info-dialog-footer{height:auto!important;min-height:64px;padding:11px 20px!important;border-top:1px solid #263b4718!important;background:#f1f5f5!important;color:#69777c!important}.info-dialog-footer span{font-size:11px;line-height:1.5}.info-dialog-footer button{padding:8px 15px;border:0;border-radius:999px;background:#263b47;color:#fff;font-size:12px;white-space:nowrap;cursor:pointer}
+@media(max-width:760px){.header-actions{gap:5px}.header-back{font-size:12px}.header-action{padding:7px 9px;font-size:11px}.header-actions .local-note{display:none}.info-backdrop{padding:10px}.info-dialog-heading{padding:14px 16px!important}.info-dialog-content{padding:2px 17px 8px}.info-dialog-footer{align-items:flex-start!important;gap:10px;flex-direction:column}}
 .brand{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}.brand img{width:34px;height:34px;flex:none;border:2px solid #fff;border-radius:50%;object-fit:cover;box-shadow:0 2px 8px #263b4722}.brand .brand-name{margin:0;color:#263b47;font:600 17px Georgia,serif;letter-spacing:0}.brand .brand-divider{margin:0;color:#9aabb0;font:14px sans-serif}.brand .brand-label{margin:0;color:#6a90a6;font:10px monospace;letter-spacing:.1em}.bead-app footer{height:auto;min-height:72px;padding-top:15px;padding-bottom:15px;gap:16px}.tool-footer-brand{color:#fff;font:600 14px Georgia,serif}.tool-footer-links{display:flex;align-items:center;justify-content:flex-end;gap:18px;flex-wrap:wrap}.tool-footer-links a{color:#b7cbd2;font-size:12px}.tool-footer-links a:hover{color:#fff}.bead-app footer .router-link-active{color:#b7cbd2}
 .author-mark-toggle{margin:10px 0 18px}.author-mark-toggle span{display:flex;flex-direction:column;gap:4px}.author-mark-toggle small{color:#77877c;font-size:11px}
 .tool-toast{position:fixed;z-index:13000;top:calc(18px + env(safe-area-inset-top));left:50%;display:flex;align-items:center;gap:16px;width:max-content;max-width:min(560px,calc(100vw - 28px));padding:13px 15px 13px 18px;border:1px solid #6a90a655;border-radius:14px;background:#fffaf8;color:#263b47;box-shadow:0 12px 34px #17252d35;transform:translateX(-50%);animation:toast-in .2s ease-out}.tool-toast span{font-size:13px;line-height:1.5}.tool-toast button{width:25px;height:25px;flex:none;border:0;border-radius:50%;background:#edf2f3;color:#52636a;font-size:18px;line-height:1;cursor:pointer}@keyframes toast-in{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
@@ -964,4 +999,102 @@ function saveFile(blob:Blob,name:string){const url=URL.createObjectURL(blob),a=d
 .pattern-unavailable{width:100%;min-height:220px;padding:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border:1px dashed #6a90a655;border-radius:14px;background:#fffaf8;color:#52636a;text-align:center}.pattern-unavailable>span{color:#9bb4bf;font-size:42px}.pattern-unavailable b{font-size:14px}.pattern-unavailable small{max-width:240px;color:#77877c;font-size:11px;line-height:1.6}.generated-figure{flex:1;min-width:220px}.generated-figure>img{width:100%;height:auto;max-height:420px;object-fit:contain}
 .sample-button,.mapping-tools{display:none!important}
 @media(max-width:760px){.bead-app header{height:auto;min-height:72px;padding:12px 16px;gap:10px;flex-wrap:wrap}.brand{gap:6px}.brand img{width:30px;height:30px}.brand .brand-name{font-size:15px}.brand .brand-label{font-size:9px}.bead-app footer{align-items:flex-start;flex-direction:column;padding:18px 20px}.tool-footer-links{justify-content:flex-start;gap:9px 16px}}
+@media(max-width:520px){
+  .bead-app header{padding:10px 12px;gap:8px}
+  .bead-app .brand{max-width:100%;gap:5px}
+  .bead-app .brand .brand-name{font-size:14px}
+  .bead-app .brand .brand-label{font-size:8px;letter-spacing:.06em}
+  .header-actions{width:100%;flex-wrap:wrap}
+  .header-back{min-height:40px;display:inline-flex;align-items:center;padding:0 4px}
+  .header-action{min-height:40px;padding:8px 10px}
+  .bead-app main{width:calc(100% - 24px);padding:30px 0 42px}
+  .intro h1{font-size:clamp(30px,8.5vw,42px);line-height:1.25}
+  .intro>span{display:block;font-size:13px;line-height:1.65}
+  .workspace{gap:14px;margin-top:24px}
+  .controls,.preview{padding:14px;border-radius:14px}
+  .upload{height:124px}
+  .setting{margin-top:19px}
+  .source-switch button{min-height:40px}
+  .range-row{gap:6px}
+  .number-input{width:58px;padding:8px 4px;font-size:16px}
+  .check{min-height:40px;align-items:center;margin:15px 0}
+  .format-options{gap:5px}
+  .format-card{min-height:62px;height:auto;padding:7px 3px}
+  .format-card small{font-size:8px}
+  .download,.bead-mode-button{min-height:44px}
+  .preview{min-height:250px}
+  .images{flex-direction:column;align-items:center;gap:14px}
+  .images figure,.generated-figure{width:100%;max-width:100%;min-width:0}
+  .images img{max-height:360px;margin:0 auto}
+  .palette-manager{margin-top:18px;padding:13px;border-radius:14px}
+  .palette-heading{gap:12px}
+  .palette-heading h2{font-size:21px}
+  .palette-actions{width:100%;flex-wrap:wrap}
+  .palette-actions button,.import-button{min-height:40px}
+  .add-color{grid-template-columns:1fr;gap:12px;margin-top:15px;padding:12px}
+  .add-color>label,.picker-field{min-width:0}
+  .add-color input[type=text]{min-height:42px;font-size:16px}
+  .form-actions{grid-column:auto}
+  .form-actions button{min-height:42px;flex:1}
+  .palette-tools{align-items:stretch;gap:10px}
+  .palette-search{flex-basis:100%;min-height:42px}
+  .palette-search input,.fullscreen-color-search input{font-size:16px}
+  .only-enabled{min-height:40px}
+  .swatch-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .swatch-card{padding:8px}
+  .swatch-toggle{gap:6px}
+  .swatch-toggle>i{width:28px;height:28px}
+  .swatch-toggle b{font-size:11px}
+  .swatch-toggle small{font-size:9px}
+  .swatch-actions{margin-left:20px;flex-wrap:wrap}
+  .swatch-actions button{min-height:34px}
+  .info-backdrop{padding:8px}
+  .info-dialog{max-height:calc(100dvh - 16px);border-radius:15px}
+  .info-dialog-heading h2{font-size:20px}
+  .info-dialog-content ul{font-size:13px}
+  .info-dialog-footer button{min-height:40px}
+  .tool-toast{max-width:calc(100vw - 20px);padding:10px 12px}
+}
+@media(max-width:380px){
+  .bead-app header{padding-right:10px;padding-left:10px}
+  .bead-app main{width:calc(100% - 20px)}
+  .header-actions{display:grid;grid-template-columns:1fr 1fr}
+  .header-action{padding:7px 5px;font-size:10px}
+  .format-options{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .format-card b{font-size:11px}
+  .swatch-grid{grid-template-columns:1fr}
+  .color-selector-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .color-selector-grid button{gap:5px;padding:6px}
+}
+@media(max-width:700px){
+  .bead-mode{height:100dvh;padding-bottom:env(safe-area-inset-bottom)}
+  .bead-mode-toolbar{padding-right:max(10px,env(safe-area-inset-right));padding-left:max(10px,env(safe-area-inset-left))}
+  .bead-mode-top>button,.bead-mode-view-options label,.fit-options button,.zoom-controls button{min-height:40px}
+  .zoom-controls input{min-width:0}
+  .fullscreen-colors button{min-height:38px}
+  .color-panel-actions>button{min-height:40px}
+  .color-selector-grid button{min-height:42px}
+  .overview-map{width:104px;height:64px}
+}
+@media(max-width:760px) and (max-height:500px) and (orientation:landscape){
+  .bead-mode-toolbar{max-height:58dvh;overflow-y:auto}
+  .color-selector-grid{max-height:18dvh}
+  .fullscreen-colors{max-height:12dvh}
+}
+.header-actions{justify-content:flex-end}
+.header-action{min-height:36px;padding:8px 14px;border:1px solid transparent;border-radius:999px;font-weight:600;transition:background .18s ease,border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+.header-action:active{transform:translateY(1px)}
+.header-action:focus-visible,.header-back:focus-visible{outline:2px solid #263b47;outline-offset:3px}
+.info-action{border-color:#dbe6e8;background:linear-gradient(135deg,#f3f7f6,#eaf1f2);color:#365563;box-shadow:0 2px 6px #263b470d}
+.info-action:hover{border-color:#a9c1c8;background:#e6eff0;box-shadow:0 4px 12px #263b4718}
+.reset-action{border-color:#f0d7d4;background:#fff7f5;color:#a45650}
+.reset-action:hover{border-color:#d8a8a2;background:#fbecea;box-shadow:0 4px 12px #87443b18}
+.header-back{min-height:36px;display:inline-flex;align-items:center;padding:0 2px 0 8px;border-radius:999px;font-weight:600;text-decoration:none}
+.header-back:hover{text-decoration:underline;text-underline-offset:3px}
+.upload-file-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:760px){.preview{scroll-margin-top:16px}}
+@media(max-width:380px){
+  .header-actions{justify-content:stretch}
+  .header-back{grid-column:2;justify-self:end}
+}
 </style>

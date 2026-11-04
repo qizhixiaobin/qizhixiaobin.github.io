@@ -35,6 +35,8 @@ npm install
 npm run dev
 ```
 
+The Vite development server listens on all network interfaces so other devices on the same LAN can open it. Restart the server, find this computer's IPv4 address (for example with `ipconfig` on Windows), then visit `http://<computer-ip>:5173` on the phone. If it still cannot connect, allow Node.js/Vite through Windows Defender Firewall on the Private network and make sure both devices are on the same network.
+
 ### Type-Check, Compile and Minify for Production
 
 ```sh
