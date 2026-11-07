@@ -40,6 +40,7 @@ function validateDeck(payload: unknown): StudyRecord[] {
 }
 
 const STORAGE_KEY = 'forest-bloom-japanese-study-progress-v1'
+const SELECTION_STORAGE_KEY = 'forest-bloom-japanese-study-selection-v1'
 const baseUrl = import.meta.env.BASE_URL
 const bookOptions: Array<{ id: BookId; label: string }> = [
   { id: 'redbook', label: '红宝书' },
@@ -71,6 +72,7 @@ const studySearchMode = ref('全部')
 const studySearchQuery = ref('')
 const studyPartOfSpeechFilter = ref('全部')
 const studyBook = ref<BookId>('redbook')
+const hasPersistedStudySelection = ref(false)
 const studyBookSelectionExpanded = ref(false)
 const studyLevel = ref(1)
 const studyBookLoading = ref(false)
@@ -81,6 +83,7 @@ const studyShowKana = ref(false)
 const studyShowMeaning = ref(false)
 const answerVisible = ref(false)
 const knownIds = ref<string[]>([])
+const unsureIds = ref<string[]>([])
 const isLoading = ref(true)
 const error = ref('')
 const speechError = ref('')
@@ -95,11 +98,23 @@ let activeUtterance: SpeechSynthesisUtterance | undefined
 let speechStartTimeout: number | undefined
 let clearingStudyProgress = false
 
-const searchModes = ['全部', '中文意思', '假名', '汉字/单词', '日文开头', '日文结尾', '重复词形']
+const searchModes = ['全部', '中文意思', '假名', '汉字/单词', '通配符']
 const selectedJapaneseVoice = computed(() =>
   japaneseVoices.value.find(voice => voice.voiceURI === selectedVoiceURI.value)
 )
 const japaneseCollator = new Intl.Collator('ja-JP', { sensitivity: 'base', numeric: true })
+const browseWildcardPattern = computed(() => parseWildcardPattern(searchQuery.value))
+const studyWildcardPattern = computed(() => parseWildcardPattern(studySearchQuery.value))
+const browseSearchMode = computed(() =>
+  searchMode.value === '全部' && isRepeatedWildcardFormat(searchQuery.value)
+    ? '通配符'
+    : searchMode.value
+)
+const studySearchModeForFiltering = computed(() =>
+  studySearchMode.value === '全部' && isRepeatedWildcardFormat(studySearchQuery.value)
+    ? '通配符'
+    : studySearchMode.value
+)
 const selectedBookOption = computed(() => bookOptions.find(book => book.id === selectedBook.value)!)
 const selectedStudyBookOption = computed(() => bookOptions.find(book => book.id === studyBook.value)!)
 const studyPartOfSpeechOptions = computed(() => [
@@ -121,7 +136,9 @@ const filteredRecords = computed(() => {
     const known = knownIds.value.includes(record.id)
     if (statusFilter.value === '已掌握' && !known) return false
     if (statusFilter.value === '待复习' && known) return false
-    return (!query && searchMode.value !== '重复词形') || matchesQuery(record, query, searchMode.value)
+    if (browseWildcardPattern.value.error) return false
+    return (!query && browseSearchMode.value !== '通配符') ||
+      matchesQuery(record, query, browseSearchMode.value, browseWildcardPattern.value.expression)
   })
 })
 const sortedRecords = computed(() => {
@@ -154,20 +171,50 @@ const studyFilteredRecords = computed(() => {
   return studySearchRecords.value.filter(record => {
     if (studyPartOfSpeechFilter.value !== '全部' &&
       !record.partOfSpeech.includes(studyPartOfSpeechFilter.value)) return false
-    return (!query && studySearchMode.value !== '重复词形') ||
-      matchesQuery(record, query, studySearchMode.value)
+    if (studyWildcardPattern.value.error) return false
+    return (!query && studySearchModeForFiltering.value !== '通配符') ||
+      matchesQuery(record, query, studySearchModeForFiltering.value, studyWildcardPattern.value.expression)
   })
 })
 const knownCount = computed(() => records.value.filter(record => knownIds.value.includes(record.id)).length)
+const studyProgress = computed(() => {
+  const known = studyCandidates.value.filter(record => knownIds.value.includes(record.id)).length
+  const unsure = studyCandidates.value.filter(record =>
+    !knownIds.value.includes(record.id) && unsureIds.value.includes(record.id)
+  ).length
+  const unstudied = studyCandidates.value.length - known - unsure
+  return {
+    known,
+    unsure,
+    unstudied,
+    total: studyCandidates.value.length,
+    knownPercent: studyCandidates.value.length ? known / studyCandidates.value.length * 100 : 0,
+    unsurePercent: studyCandidates.value.length ? unsure / studyCandidates.value.length * 100 : 0,
+    unstudiedPercent: studyCandidates.value.length ? unstudied / studyCandidates.value.length * 100 : 0,
+  }
+})
 const selectedBookProgressIds = computed(() => {
   const prefix = `${selectedBook.value}-n`
-  return knownIds.value.filter(id => id.startsWith(prefix))
+  return [...new Set([...knownIds.value, ...unsureIds.value])]
+    .filter(id => id.startsWith(prefix))
+})
+const currentLevelProgressIds = computed(() => {
+  const prefix = `${selectedBook.value}-n${selectedLevel.value}-`
+  return [...new Set([...knownIds.value, ...unsureIds.value])]
+    .filter(id => id.startsWith(prefix))
 })
 const progressPercent = computed(() => records.value.length
   ? Math.round(knownCount.value / records.value.length * 100)
   : 0)
+const allStudyCandidatesKnown = computed(() =>
+  studyCandidates.value.length > 0 &&
+  studyCandidates.value.every(record => knownIds.value.includes(record.id))
+)
+
+loadSelection()
 
 watch([selectedBook, selectedLevel], () => void loadDeck(), { immediate: true })
+watch([selectedBook, selectedLevel, studyBook, studyLevel], saveSelection)
 watch([filteredRecords, selectedRecordId], () => {
   if (!filteredRecords.value.some(record => record.id === selectedRecordId.value)) {
     selectedRecordId.value = filteredRecords.value[0]?.id ?? ''
@@ -188,7 +235,7 @@ watch(partOfSpeechOptions, options => {
 watch(studyPartOfSpeechOptions, options => {
   if (!options.includes(studyPartOfSpeechFilter.value)) studyPartOfSpeechFilter.value = '全部'
 })
-watch(knownIds, saveProgress, { flush: 'sync' })
+watch([knownIds, unsureIds], saveProgress, { flush: 'sync' })
 
 loadProgress()
 
@@ -389,6 +436,14 @@ function isStudyRecord(value: unknown): value is StudyRecord {
     'written' in value.search && Array.isArray(value.search.written)
 }
 
+function isBookId(value: unknown): value is BookId {
+  return bookOptions.some(book => book.id === value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+
 function normalizeQuery(value: string) {
   return toHiragana(value.normalize('NFKC').trim().toLocaleLowerCase())
 }
@@ -402,7 +457,42 @@ function toHiragana(value: string) {
   }).join('')
 }
 
-function matchesQuery(record: StudyRecord, query: string, mode: string) {
+function parseWildcardPattern(query: string) {
+  if (!query) return { expression: null, error: '' }
+  try {
+    const shape = query.trim()
+    if (/^[A-Z]+$/u.test(shape) && new Set(shape).size < shape.length) {
+      const captures = new Map<string, number>()
+      let captureCount = 0
+      const pattern = [...shape].map(symbol => {
+        const existingCapture = captures.get(symbol)
+        if (existingCapture !== undefined) return `\\${existingCapture}`
+        captureCount += 1
+        captures.set(symbol, captureCount)
+        return '(.)'
+      }).join('')
+      return { expression: new RegExp(`^${pattern}$`, 'iu'), error: '' }
+    }
+
+    const escaped = normalizeQuery(query).replace(/[.+^${}()|[\]\\]/gu, '\\$&')
+    return {
+      expression: new RegExp(`^${escaped.replace(/\*/gu, '.*').replace(/\?/gu, '.')}$`, 'iu'),
+      error: '',
+    }
+  } catch (cause) {
+    if (cause instanceof SyntaxError) {
+      return { expression: null, error: '通配符格式无效，请检查输入内容。' }
+    }
+    throw cause
+  }
+}
+
+function isRepeatedWildcardFormat(query: string) {
+  const shape = query.trim()
+  return /^[A-Z]+$/u.test(shape) && new Set(shape).size < shape.length
+}
+
+function matchesQuery(record: StudyRecord, query: string, mode: string, expression: RegExp | null = null) {
   const includes = (values: string[]) => values.some(value => normalizeQuery(value).includes(query))
   const headwords = [...new Set([
     record.term,
@@ -414,11 +504,18 @@ function matchesQuery(record: StudyRecord, query: string, mode: string) {
   if (mode === '中文意思') return includes(record.search.meaningZh)
   if (mode === '假名') return includes(record.search.kana)
   if (mode === '汉字/单词') return includes([...record.search.written, ...headwords])
-  if (mode === '日文开头') return headwords.some(value => value.startsWith(query))
-  if (mode === '日文结尾') return headwords.some(value => value.endsWith(query))
-  if (mode === '重复词形') return headwords.some(value =>
-    isRepeatedWordForm(value) && (!query || value.includes(query)),
-  )
+  if (mode === '通配符') {
+    if (!query) return true
+    const japaneseFields = [
+      record.term,
+      record.reading,
+      ...record.writtenForms,
+      ...record.search.kana,
+      ...record.search.written,
+    ]
+    return expression !== null &&
+      japaneseFields.some(value => expression.test(normalizeQuery(value)))
+  }
   return includes([
     ...record.search.meaningZh,
     ...record.search.kana,
@@ -429,13 +526,6 @@ function matchesQuery(record: StudyRecord, query: string, mode: string) {
   ])
 }
 
-function isRepeatedWordForm(value: string) {
-  const characters = [...value]
-  if (characters.length < 4 || characters.length % 2 !== 0) return false
-  const middle = characters.length / 2
-  return characters.slice(0, middle).join('') === characters.slice(middle).join('')
-}
-
 function loadProgress() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
@@ -444,15 +534,63 @@ function loadProgress() {
     if (
       typeof parsed !== 'object' || parsed === null ||
       !('version' in parsed) || parsed.version !== 1 ||
-      !('knownCardIds' in parsed) || !Array.isArray(parsed.knownCardIds) ||
-      !parsed.knownCardIds.every((id: unknown) => typeof id === 'string')
+      !('knownCardIds' in parsed)
     ) {
       throw new Error('Saved progress has an unsupported format.')
     }
-    knownIds.value = parsed.knownCardIds
+    const savedKnownIds = parsed.knownCardIds
+    const savedUnsureIds = 'unsureCardIds' in parsed ? parsed.unsureCardIds : []
+    if (!isStringArray(savedKnownIds) || !isStringArray(savedUnsureIds)) {
+      throw new Error('Saved progress has an unsupported format.')
+    }
+    knownIds.value = savedKnownIds
+    unsureIds.value = savedUnsureIds.filter(id => !savedKnownIds.includes(id))
   } catch (cause) {
     console.error('Unable to restore Japanese study progress.', cause)
     error.value = '本地学习进度无法读取；搜索和浏览仍可正常使用。'
+  }
+}
+
+function loadSelection() {
+  try {
+    const saved = localStorage.getItem(SELECTION_STORAGE_KEY)
+    if (!saved) return
+    const parsed: unknown = JSON.parse(saved)
+    if (
+      typeof parsed !== 'object' || parsed === null ||
+      !('version' in parsed) || parsed.version !== 1 ||
+      !('selectedBook' in parsed) || !isBookId(parsed.selectedBook) ||
+      !('selectedLevel' in parsed) || typeof parsed.selectedLevel !== 'number' ||
+      !levelOptions.includes(parsed.selectedLevel) ||
+      !('studyBook' in parsed) || !isBookId(parsed.studyBook) ||
+      !('studyLevel' in parsed) || typeof parsed.studyLevel !== 'number' ||
+      !levelOptions.includes(parsed.studyLevel)
+    ) {
+      throw new Error('Saved Japanese study selection has an unsupported format.')
+    }
+    selectedBook.value = parsed.selectedBook
+    selectedLevel.value = parsed.selectedLevel
+    studyBook.value = parsed.studyBook
+    studyLevel.value = parsed.studyLevel
+    hasPersistedStudySelection.value = true
+  } catch (cause) {
+    console.error('Unable to restore Japanese study selection.', cause)
+    error.value = '本地教材选择无法读取；已恢复默认选项。'
+  }
+}
+
+function saveSelection() {
+  try {
+    localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      selectedBook: selectedBook.value,
+      selectedLevel: selectedLevel.value,
+      studyBook: studyBook.value,
+      studyLevel: studyLevel.value,
+    }))
+  } catch (cause) {
+    console.error('Unable to save Japanese study selection.', cause)
+    error.value = '浏览器无法保存教材选择，请检查本地存储空间。'
   }
 }
 
@@ -462,6 +600,7 @@ function saveProgress() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       version: 1,
       knownCardIds: knownIds.value,
+      unsureCardIds: unsureIds.value,
     }))
   } catch (cause) {
     console.error('Unable to save Japanese study progress.', cause)
@@ -470,11 +609,12 @@ function saveProgress() {
 }
 
 function clearAllStudyProgress() {
-  if (!window.confirm('确定清除日语学习功能的全部掌握进度和当前练习队列吗？只会删除本功能保存的日语学习进度，不会影响拼豆或其他数据。')) return
+  if (!window.confirm('确定清除日语学习功能的全部学习进度和当前练习队列吗？只会删除本功能保存的日语学习进度，不会影响拼豆或其他数据。')) return
   try {
     localStorage.removeItem(STORAGE_KEY)
     clearingStudyProgress = true
     knownIds.value = []
+    unsureIds.value = []
     studyQueueIds.value = []
     studyCandidates.value = []
     studySearchRecords.value = []
@@ -496,30 +636,35 @@ function clearAllStudyProgress() {
 
 function clearBookProgress() {
   const bookPrefix = `${selectedBook.value}-n`
-  const bookIds = new Set(knownIds.value.filter(id => id.startsWith(bookPrefix)))
+  const bookIds = new Set([...knownIds.value, ...unsureIds.value].filter(id => id.startsWith(bookPrefix)))
   if (!bookIds.size) return
   const bookLabel = bookOptions.find(book => book.id === selectedBook.value)?.label ?? selectedBook.value
-  if (!window.confirm(`确定清除${bookLabel}所有等级的 ${bookIds.size} 条已掌握进度吗？其他教材不受影响。`)) return
+  if (!window.confirm(`确定清除${bookLabel}所有等级的 ${bookIds.size} 条学习状态吗？其他教材不受影响。`)) return
   knownIds.value = knownIds.value.filter(id => !bookIds.has(id))
+  unsureIds.value = unsureIds.value.filter(id => !bookIds.has(id))
   if (pageMode.value === 'study' && studyBook.value === selectedBook.value) updateStudyOrder()
 }
 
 function clearCurrentLevelProgress() {
   const levelPrefix = `${selectedBook.value}-n${selectedLevel.value}-`
-  const levelIds = new Set(knownIds.value.filter(id => id.startsWith(levelPrefix)))
+  const levelIds = new Set([...knownIds.value, ...unsureIds.value].filter(id => id.startsWith(levelPrefix)))
   if (!levelIds.size) return
   const bookLabel = bookOptions.find(book => book.id === selectedBook.value)?.label ?? selectedBook.value
-  if (!window.confirm(`确定清除${bookLabel} N${selectedLevel.value}的 ${levelIds.size} 条已掌握进度吗？其他教材和等级不受影响。`)) return
+  if (!window.confirm(`确定清除${bookLabel} N${selectedLevel.value}的 ${levelIds.size} 条学习状态吗？其他教材和等级不受影响。`)) return
   knownIds.value = knownIds.value.filter(id => !levelIds.has(id))
+  unsureIds.value = unsureIds.value.filter(id => !levelIds.has(id))
   if (pageMode.value === 'study' && studyBook.value === selectedBook.value && studyLevel.value === selectedLevel.value) {
     updateStudyOrder()
   }
 }
 
 function toggleKnown(record: StudyRecord) {
-  knownIds.value = knownIds.value.includes(record.id)
+  const wasKnown = knownIds.value.includes(record.id)
+  knownIds.value = wasKnown
     ? knownIds.value.filter(id => id !== record.id)
     : [...knownIds.value, record.id]
+  unsureIds.value = unsureIds.value.filter(id => id !== record.id)
+  if (studyCandidates.value.some(candidate => candidate.id === record.id)) updateStudyOrder()
 }
 
 function showMore() {
@@ -566,9 +711,9 @@ function startStudy(
   studyBook.value = book
   studyLevel.value = level
   studyRecords.value = [...studyCandidates.value]
-  const unlearned = studyRecords.value.filter(record => !knownIds.value.includes(record.id))
-  const learned = studyRecords.value.filter(record => knownIds.value.includes(record.id))
-  studyQueueIds.value = [...unlearned, ...learned].map(record => record.id)
+  studyQueueIds.value = studyRecords.value
+    .filter(record => !knownIds.value.includes(record.id))
+    .map(record => record.id)
   if (studyRandomOrder.value) shuffleIds(studyQueueIds.value)
   studyIndex.value = 0
   answerVisible.value = false
@@ -583,18 +728,22 @@ function updateStudyOrder() {
   const completedAndCurrent = studyQueueIds.value.slice(0, studyIndex.value + 1)
   const completedIds = new Set(completedAndCurrent)
   let upcoming = studyQueueIds.value.slice(studyIndex.value + 1)
+    .filter(id => !knownIds.value.includes(id))
   if (studyRandomOrder.value) {
     upcoming = shuffleIds(upcoming)
   } else {
-    const unlearned = studyRecords.value.filter(record =>
+    upcoming = studyRecords.value.filter(record =>
       !knownIds.value.includes(record.id) && !completedIds.has(record.id)
-    )
-    const learned = studyRecords.value.filter(record =>
-      knownIds.value.includes(record.id) && !completedIds.has(record.id)
-    )
-    upcoming = [...unlearned, ...learned].map(record => record.id)
+    ).map(record => record.id)
   }
   studyQueueIds.value = [...completedAndCurrent, ...upcoming]
+}
+
+function removeKnownUpcomingStudyCards() {
+  const completedIds = studyQueueIds.value.slice(0, studyIndex.value)
+  const upcomingIds = studyQueueIds.value.slice(studyIndex.value)
+    .filter(id => !knownIds.value.includes(id))
+  studyQueueIds.value = [...completedIds, ...upcomingIds]
 }
 
 function updateStudyDisplay() {
@@ -648,12 +797,22 @@ async function loadStudyDeck(book: BookId, level: number): Promise<boolean> {
   }
 }
 
-function enterStudy() {
+async function enterStudy() {
+  if (
+    hasPersistedStudySelection.value &&
+    (!studySearchRecords.value.length ||
+      studySearchRecords.value[0]?.book !== studyBook.value ||
+      studySearchRecords.value[0]?.level !== `N${studyLevel.value}`)
+  ) {
+    await loadStudyDeck(studyBook.value, studyLevel.value)
+    return
+  }
   if (!studyQueueIds.value.length) {
     studySearchRecords.value = [...filteredRecords.value]
     startStudy(studyFilteredRecords.value, selectedBook.value, selectedLevel.value)
     return
   }
+  removeKnownUpcomingStudyCards()
   if (studyIndex.value >= studyQueueIds.value.length) restartStudy()
   pageMode.value = 'study'
 }
@@ -668,12 +827,23 @@ function advanceStudy() {
   answerVisible.value = false
 }
 
+function returnToPreviousStudyRecord() {
+  if (studyIndex.value <= 0) return
+  studyIndex.value -= 1
+  answerVisible.value = false
+}
+
 function markStudyRecord(known: boolean) {
   const record = currentStudyRecord.value
   if (!record) return
-  knownIds.value = known
-    ? [...new Set([...knownIds.value, record.id])]
-    : knownIds.value.filter(id => id !== record.id)
+  if (known) {
+    knownIds.value = [...new Set([...knownIds.value, record.id])]
+    unsureIds.value = unsureIds.value.filter(id => id !== record.id)
+  } else {
+    knownIds.value = knownIds.value.filter(id => id !== record.id)
+    unsureIds.value = [...new Set([...unsureIds.value, record.id])]
+  }
+  updateStudyOrder()
   advanceStudy()
 }
 
@@ -735,7 +905,7 @@ function exportBackup() {
       <nav class="mode-switch" aria-label="日语学习模式">
         <button :class="{ active: pageMode === 'browse' }" @click="pageMode = 'browse'">词库浏览</button>
         <button :class="{ active: pageMode === 'study' }" :disabled="!records.length && !studyRecords.length" @click="enterStudy">背词练习</button>
-        <button class="clear-all-progress-nav" :disabled="!knownIds.length" @click="clearAllStudyProgress">清除全部进度</button>
+        <button class="clear-all-progress-nav" :disabled="!knownIds.length && !unsureIds.length" @click="clearAllStudyProgress">清除全部进度</button>
       </nav>
       <label class="voice-picker">
         <span><span class="voice-picker-icon" aria-hidden="true">♫</span>朗读音色</span>
@@ -798,7 +968,7 @@ function exportBackup() {
         </div>
         <div class="search-box">
           <span aria-hidden="true">⌕</span>
-          <input v-model="searchQuery" type="search" :placeholder="searchMode === '日文开头' ? '输入日文开头，如 あ…' : searchMode === '日文结尾' ? '输入日文结尾，如 あ' : searchMode === '重复词形' ? '可留空查找重复形式，如 わくわく' : '输入中文意思、假名或汉字…'" aria-label="搜索日语词条" />
+          <input v-model="searchQuery" type="search" :placeholder="browseSearchMode === '通配符' ? '例如 *あ*、あ*、AABB、ABAB' : '输入中文意思、假名或汉字…'" aria-label="搜索日语词条" />
           <button v-if="searchQuery" class="clear-search" aria-label="清空搜索" @click="searchQuery = ''">清空</button>
         </div>
         <div class="filter-row">
@@ -826,9 +996,10 @@ function exportBackup() {
               <span :style="{ width: `${progressPercent}%` }"></span>
             </div>
             <button class="export-button" :disabled="!records.length" @click="exportBackup">导出进度</button>
-            <button class="clear-study-progress" :disabled="!knownCount" @click="clearCurrentLevelProgress">清除本级进度</button>
+            <button class="clear-study-progress" :disabled="!currentLevelProgressIds.length" @click="clearCurrentLevelProgress">清除本级进度</button>
           </div>
         </div>
+        <p v-if="browseSearchMode === '通配符'" class="study-search-hint wildcard-search-hint">* 匹配任意长度字符，? 匹配单个字符；大写字母可表示重复字符格式，如 AABB、ABAB；按完整词条匹配。a*b* 表示以 a 开头且后面包含 b，要匹配任意位置请在前后加 *。</p>
       </section>
 
       <template v-if="pageMode === 'study'">
@@ -887,7 +1058,7 @@ function exportBackup() {
                   v-model="studySearchQuery"
                   type="search"
                   :disabled="studyBookLoading"
-                  :placeholder="studySearchMode === '日文开头' ? '输入日文开头，如 あ…' : studySearchMode === '日文结尾' ? '输入日文结尾，如 あ' : studySearchMode === '重复词形' ? '可留空查找重复形式，如 わくわく' : '输入中文意思、假名或汉字…'"
+                  :placeholder="studySearchMode === '通配符' ? '例如 *あ*、あ*、AABB、ABAB' : '输入中文意思、假名或汉字…'"
                   aria-label="搜索背词词条"
                   @keydown.enter="applyStudySearch"
                 />
@@ -897,7 +1068,9 @@ function exportBackup() {
                 按搜索结果练习 · {{ studyFilteredRecords.length }}
               </button>
             </div>
-            <p class="study-search-hint">搜索只针对当前练习教材和等级；可按特定假名、日文开头/结尾或重复词形筛选。</p>
+            <p class="study-search-hint">
+              搜索只针对当前练习教材和等级；支持中文、假名、汉字/单词检索，或使用 *、? 和 AABB/ABAB 格式匹配日文词条、读音和书写形式。大写重复格式可在「全部」或「通配符」模式中直接搜索。
+            </p>
           </div>
           <fieldset class="study-display-options">
             <legend>练习选项</legend>
@@ -913,7 +1086,25 @@ function exportBackup() {
               <p class="panel-kicker">ACTIVE RECALL · N{{ studyLevel }}</p>
               <h2>想一想，再揭晓答案。</h2>
             </div>
-            <span class="study-counter">{{ studyIndex + 1 }} / {{ studyQueueIds.length }}</span>
+            <div class="study-progress" role="group" :aria-label="`学习进度：已掌握 ${studyProgress.known}，还不熟 ${studyProgress.unsure}，未背诵 ${studyProgress.unstudied}`">
+              <div
+                class="study-progress-track"
+                role="progressbar"
+                :aria-valuenow="studyProgress.known + studyProgress.unsure"
+                :aria-valuemin="0"
+                :aria-valuemax="studyProgress.total"
+                aria-label="当前筛选词条学习进度"
+              >
+                <span class="study-progress-known" :style="{ width: `${studyProgress.knownPercent}%` }"></span>
+                <span class="study-progress-unsure" :style="{ width: `${studyProgress.unsurePercent}%` }"></span>
+                <span class="study-progress-unstudied" :style="{ width: `${studyProgress.unstudiedPercent}%` }"></span>
+              </div>
+              <div class="study-progress-legend">
+                <span><i class="known-dot"></i>已掌握 {{ studyProgress.known }}</span>
+                <span><i class="unsure-dot"></i>还不熟 {{ studyProgress.unsure }}</span>
+                <span><i class="unstudied-dot"></i>未背诵 {{ studyProgress.unstudied }}</span>
+              </div>
+            </div>
           </div>
           <div class="memorize-card">
             <div class="detail-tags">
@@ -952,6 +1143,7 @@ function exportBackup() {
             </template>
           </div>
           <div class="memorize-navigation">
+            <button :disabled="studyIndex <= 0" @click="returnToPreviousStudyRecord">← 上一条</button>
             <button @click="advanceStudy">跳过这条</button>
             <button @click="pageMode = 'browse'">返回词库</button>
             <button @click="restartStudy">按本轮词条重新开始</button>
@@ -959,8 +1151,8 @@ function exportBackup() {
         </section>
         <div v-else class="empty-state">
           <span aria-hidden="true">あ</span>
-          <h3>{{ studyQueueIds.length ? '本轮练习完成' : '当前筛选下没有可练习的词条' }}</h3>
-          <p>{{ studyQueueIds.length ? '做得好！可以再练一轮，或返回词库继续查找。' : '调整书本、等级或筛选条件后再开始。' }}</p>
+          <h3>{{ studyQueueIds.length ? '本轮练习完成' : allStudyCandidatesKnown ? '筛选词条都已掌握' : '当前筛选下没有可练习的词条' }}</h3>
+          <p>{{ studyQueueIds.length ? '做得好！可以再练一轮，或返回词库继续查找。' : allStudyCandidatesKnown ? '已掌握的词条不会重复加入练习；可在词库中取消掌握状态，或清除对应进度后再练习。' : '调整书本、等级或筛选条件后再开始。' }}</p>
           <button v-if="studyQueueIds.length" class="reveal-answer" @click="restartStudy">再练一轮</button>
           <button v-else class="reveal-answer" @click="pageMode = 'browse'">返回词库</button>
         </div>
@@ -1140,7 +1332,7 @@ function exportBackup() {
 .notice { margin: 14px 0; padding: 12px 16px; border: 1px solid #e7bdb7; border-radius: 12px; color: #8d4e49; background: #fff2ef; font-size: 13px; }
 .mode-switch { width: 100%; margin: 20px 0 0; padding: 4px; display: flex; align-items: center; gap: 4px; border: 1px solid #e3e9e6; border-radius: 999px; background: #eef2ef; }.mode-switch button { padding: 9px 18px; border: 0; border-radius: 999px; color: #758381; background: transparent; font-size: 12px; }.mode-switch button.active { color: #fff; background: #6a90a6; box-shadow: 0 2px 6px #263b471c; }.mode-switch button:disabled { opacity: .45; cursor: not-allowed; }.mode-switch .clear-all-progress-nav { margin-left: auto; border: 1px solid #ead4cf; color: #9c6259; background: #fff7f4; }.mode-switch .clear-all-progress-nav:hover:not(:disabled) { background: #ffede8; }
 .voice-picker { width: fit-content; max-width: 100%; margin: 12px 0 16px auto; padding: 8px 10px 8px 12px; display: flex; align-items: center; gap: 9px; border: 1px solid #e4ebe7; border-radius: 11px; color: #63777c; background: rgba(255,253,251,.9); box-shadow: 0 3px 12px rgba(38,59,71,.035); font-size: 11px; }.voice-picker > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }.voice-picker-icon { color: #6a90a6; font-size: 16px; line-height: 1; }.voice-picker select { min-width: 150px; max-width: min(320px,45vw); padding: 7px 26px 7px 9px; border: 1px solid #dce5e3; border-radius: 8px; color: #354d58; background: #fff; font: inherit; }.voice-picker select:focus-visible { outline: 2px solid #6a90a6; outline-offset: 2px; }.voice-picker select:disabled { opacity: .65; }.voice-picker small { color: #94a09f; font-size: 10px; white-space: nowrap; }
-.study-session-controls { margin-top: 16px; padding: 16px 18px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px; border: 1px solid rgba(38,59,71,.1); border-radius: 16px; background: #fffdfb; box-shadow: 0 8px 24px rgba(38,59,71,.03); }.study-book-picker-panel { flex: 1; min-width: 0; }.study-book-picker-expanded { margin: 0; padding: 0; border: 0; }.study-book-picker-expanded .book-picker-heading { margin-bottom: 9px; }.study-book-picker-expanded .book-card-grid { max-width: 410px; grid-template-columns: repeat(3,minmax(0,115px)); gap: 8px; }.study-book-picker-expanded .book-card { padding: 6px; gap: 5px; }.study-book-picker-expanded .book-card>img,.study-book-picker-expanded .greenbook-cover { width: min(100%,66px); }.study-book-picker-expanded .book-card-caption { width: min(100%,66px); }.study-book-picker-expanded .book-card-caption strong { font-size: 10px; }.study-book-picker-expanded .book-card-caption small { font-size: 8px; }.study-book-picker-expanded .book-selected-mark { top: 8px; right: 8px; width: 18px; height: 18px; font-size: 10px; }.study-session-controls .selected-book-bar { width: fit-content; min-width: 210px; margin: 0; }.study-book-picker { display: flex; align-items: center; gap: 8px; color: #718181; font-size: 11px; }.study-book-picker select { min-width: 112px; padding: 8px 10px; border: 1px solid #dce5e3; border-radius: 9px; color: #354d58; background: #fff; font: inherit; }.study-book-picker select:focus-visible { outline: 2px solid #6a90a6; outline-offset: 2px; }.study-book-picker select:disabled { opacity: .6; }.study-level-picker { flex: none; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 130px; }.study-level-picker select { width: 100%; }.study-search { order: 2; flex: 1 1 100%; display: grid; grid-template-columns: minmax(150px,220px) minmax(0,1fr); align-items: end; gap: 10px 14px; }.study-search-mode { display: grid; gap: 6px; color: #718181; font-size: 11px; }.study-search-mode select { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid #dce5e3; border-radius: 9px; color: #354d58; background: #fff; font: inherit; }.study-search-content { min-width: 0; display: flex; align-items: center; gap: 10px; }.study-search-content .search-box { flex: 1; min-width: 0; margin: 0; }.apply-study-search { flex: none; padding: 11px 15px; border: 1px solid #bfd2d2; border-radius: 10px; color: #527589; background: #f5faf8; font-size: 12px; white-space: nowrap; }.apply-study-search:hover:not(:disabled) { background: #eaf4f1; }.apply-study-search:disabled { opacity: .55; cursor: not-allowed; }.study-search-hint { grid-column: 2; margin: -4px 0 0; color: #7d8b8b; font-size: 11px; }.study-display-options { order: 1; }.memorize-panel { margin-top: 16px; padding: 24px; border: 1px solid rgba(38,59,71,.1); border-radius: 20px; background: #fffdfb; box-shadow: 0 10px 32px rgba(38,59,71,.035); }.memorize-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.memorize-heading h2 { margin: 0; font: 600 21px 'Noto Serif SC',serif; }.study-counter { color: #789099; font: 12px 'DM Mono',monospace; }.memorize-card { width: min(720px,100%); min-height: 340px; margin: 22px auto 0; padding: clamp(24px,5vw,46px); display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #e7ece8; border-radius: 18px; background: linear-gradient(145deg,#f3f7f5,#fbf7f2); text-align: center; }.direction-switch { margin-bottom: 20px; padding: 4px; display: flex; gap: 4px; border-radius: 999px; background: #e9efec; }.direction-switch button { padding: 7px 12px; border: 0; border-radius: 999px; color: #718181; background: transparent; font-size: 10px; }.direction-switch button.active { color: white; background: #6a90a6; }.memorize-term { margin: 18px 0 0; color: #304a56; font: 600 clamp(32px,6vw,52px)/1.5 'Noto Serif SC',serif; overflow-wrap: anywhere; }.memorize-reading { margin: 4px 0 0; color: #6a90a6; font-size: 15px; }.memorize-meaning { max-width: 580px; margin: 24px 0 0; color: #405861; font: 500 17px/1.9 'Noto Serif SC',serif; white-space: pre-wrap; }.reveal-answer { margin-top: 27px; padding: 11px 20px; border: 1px solid #bfd2d2; border-radius: 999px; color: #527589; background: #fff; font-size: 12px; }.memorize-connections { width: 100%; margin-top: 16px; display: flex; justify-content: center; flex-wrap: wrap; gap: 7px; color: #718181; font-size: 11px; }.memorize-connections strong { color: #6a90a6; }.memorize-example { width: 100%; margin-top: 13px; padding: 12px 15px; border-radius: 10px; background: #fffdfb; text-align: left; }.memorize-example p { margin: 0; color: #405861; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }.memorize-example p + p { margin-top: 5px; color: #778585; }.recall-actions { width: 100%; margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }.recall-actions button { padding: 11px; border: 1px solid #e4d7d2; border-radius: 10px; color: #9c6962; background: #fff9f6; font-size: 12px; }.recall-actions .recall-known { border-color: #c9dcd4; color: #4b7869; background: #eff7f2; }.memorize-navigation { width: min(720px,100%); margin: 14px auto 0; display: flex; justify-content: space-between; gap: 8px; }.memorize-navigation button { padding: 8px 10px; border: 0; border-radius: 8px; color: #68808a; background: transparent; font-size: 11px; }.memorize-navigation button:hover { background: #edf4f3; }
+.study-session-controls { margin-top: 16px; padding: 16px 18px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px; border: 1px solid rgba(38,59,71,.1); border-radius: 16px; background: #fffdfb; box-shadow: 0 8px 24px rgba(38,59,71,.03); }.study-book-picker-panel { flex: 1; min-width: 0; }.study-book-picker-expanded { margin: 0; padding: 0; border: 0; }.study-book-picker-expanded .book-picker-heading { margin-bottom: 9px; }.study-book-picker-expanded .book-card-grid { max-width: 410px; grid-template-columns: repeat(3,minmax(0,115px)); gap: 8px; }.study-book-picker-expanded .book-card { padding: 6px; gap: 5px; }.study-book-picker-expanded .book-card>img,.study-book-picker-expanded .greenbook-cover { width: min(100%,66px); }.study-book-picker-expanded .book-card-caption { width: min(100%,66px); }.study-book-picker-expanded .book-card-caption strong { font-size: 10px; }.study-book-picker-expanded .book-card-caption small { font-size: 8px; }.study-book-picker-expanded .book-selected-mark { top: 8px; right: 8px; width: 18px; height: 18px; font-size: 10px; }.study-session-controls .selected-book-bar { width: fit-content; min-width: 210px; margin: 0; }.study-book-picker { display: flex; align-items: center; gap: 8px; color: #718181; font-size: 11px; }.study-book-picker select { min-width: 112px; padding: 8px 10px; border: 1px solid #dce5e3; border-radius: 9px; color: #354d58; background: #fff; font: inherit; }.study-book-picker select:focus-visible { outline: 2px solid #6a90a6; outline-offset: 2px; }.study-book-picker select:disabled { opacity: .6; }.study-level-picker { flex: none; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 130px; }.study-level-picker select { width: 100%; }.study-search { order: 2; flex: 1 1 100%; display: grid; grid-template-columns: minmax(150px,220px) minmax(0,1fr); align-items: end; gap: 10px 14px; }.study-search-mode { display: grid; gap: 6px; color: #718181; font-size: 11px; }.study-search-mode select { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid #dce5e3; border-radius: 9px; color: #354d58; background: #fff; font: inherit; }.study-search-content { min-width: 0; display: flex; align-items: center; gap: 10px; }.study-search-content .search-box { flex: 1; min-width: 0; margin: 0; }.apply-study-search { flex: none; padding: 11px 15px; border: 1px solid #bfd2d2; border-radius: 10px; color: #527589; background: #f5faf8; font-size: 12px; white-space: nowrap; }.apply-study-search:hover:not(:disabled) { background: #eaf4f1; }.apply-study-search:disabled { opacity: .55; cursor: not-allowed; }.study-search-hint { grid-column: 2; margin: -4px 0 0; color: #7d8b8b; font-size: 11px; }.wildcard-search-hint { margin: 8px 0 0; }.study-display-options { order: 1; }.memorize-panel { margin-top: 16px; padding: 24px; border: 1px solid rgba(38,59,71,.1); border-radius: 20px; background: #fffdfb; box-shadow: 0 10px 32px rgba(38,59,71,.035); }.memorize-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.memorize-heading h2 { margin: 0; font: 600 21px 'Noto Serif SC',serif; }.study-counter { color: #789099; font: 12px 'DM Mono',monospace; }.memorize-card { width: min(720px,100%); min-height: 340px; margin: 22px auto 0; padding: clamp(24px,5vw,46px); display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #e7ece8; border-radius: 18px; background: linear-gradient(145deg,#f3f7f5,#fbf7f2); text-align: center; }.direction-switch { margin-bottom: 20px; padding: 4px; display: flex; gap: 4px; border-radius: 999px; background: #e9efec; }.direction-switch button { padding: 7px 12px; border: 0; border-radius: 999px; color: #718181; background: transparent; font-size: 10px; }.direction-switch button.active { color: white; background: #6a90a6; }.memorize-term { margin: 18px 0 0; color: #304a56; font: 600 clamp(32px,6vw,52px)/1.5 'Noto Serif SC',serif; overflow-wrap: anywhere; }.memorize-reading { margin: 4px 0 0; color: #6a90a6; font-size: 15px; }.memorize-meaning { max-width: 580px; margin: 24px 0 0; color: #405861; font: 500 17px/1.9 'Noto Serif SC',serif; white-space: pre-wrap; }.reveal-answer { margin-top: 27px; padding: 11px 20px; border: 1px solid #bfd2d2; border-radius: 999px; color: #527589; background: #fff; font-size: 12px; }.memorize-connections { width: 100%; margin-top: 16px; display: flex; justify-content: center; flex-wrap: wrap; gap: 7px; color: #718181; font-size: 11px; }.memorize-connections strong { color: #6a90a6; }.memorize-example { width: 100%; margin-top: 13px; padding: 12px 15px; border-radius: 10px; background: #fffdfb; text-align: left; }.memorize-example p { margin: 0; color: #405861; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }.memorize-example p + p { margin-top: 5px; color: #778585; }.recall-actions { width: 100%; margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }.recall-actions button { padding: 11px; border: 1px solid #e4d7d2; border-radius: 10px; color: #9c6962; background: #fff9f6; font-size: 12px; }.recall-actions .recall-known { border-color: #c9dcd4; color: #4b7869; background: #eff7f2; }.memorize-navigation { width: min(720px,100%); margin: 14px auto 0; display: flex; justify-content: space-between; gap: 8px; }.memorize-navigation button { padding: 8px 10px; border: 0; border-radius: 8px; color: #68808a; background: transparent; font-size: 11px; }.memorize-navigation button:hover:not(:disabled) { background: #edf4f3; }.memorize-navigation button:disabled { opacity: .4; cursor: not-allowed; }
 .study-display-options { min-width: 210px; margin: 0; padding: 8px 11px 9px; display: flex; align-items: center; gap: 12px; border: 1px solid #e4ebe7; border-radius: 10px; background: #f8faf8; }.study-display-options legend { padding: 0 4px; color: #718181; font-size: 10px; }.study-display-options label { display: inline-flex; align-items: center; gap: 5px; color: #52666d; font-size: 11px; white-space: nowrap; cursor: pointer; }.study-display-options input { margin: 0; accent-color: #6a90a6; }.study-display-options input:focus-visible { outline: 2px solid #6a90a6; outline-offset: 2px; }
 .kana-question-hint { margin: 12px 0 -12px; color: #718181; font-size: 13px; }.kana-answer { margin: 10px 0 0; color: #6a90a6; font: 500 clamp(20px,4vw,27px)/1.6 'Noto Serif SC',serif; letter-spacing: .08em; }
 .speech-row { display: flex; align-items: center; justify-content: center; gap: 10px; }.speech-control { flex: none; display: inline-flex; align-items: center; gap: 7px; }.speech-button { position: relative; z-index: 0; width: 38px; height: 38px; padding: 0; display: inline-grid; place-items: center; border: 1px solid #d9e5e2; border-radius: 50%; color: #52798a; background: linear-gradient(145deg,#fff,#f2f7f5); box-shadow: 0 2px 6px rgba(38,59,71,.08),inset 0 1px 0 #fff; cursor: pointer; transition: transform .18s ease,border-color .18s ease,color .18s ease,background .18s ease,box-shadow .18s ease; }.speech-button:hover { transform: translateY(-1px); border-color: #a8c3c4; color: #3d7180; background: #f1f8f6; box-shadow: 0 4px 10px rgba(38,59,71,.12); }.speech-button:active { transform: scale(.94); }.speech-button:focus-visible { outline: 3px solid rgba(106,144,166,.4); outline-offset: 3px; }.speech-button svg { width: 19px; height: 19px; overflow: visible; }.speaker-body { fill: currentColor; }.speaker-wave { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; transition: opacity .16s ease; }.speaker-stop { display: none; fill: currentColor; }.speech-button.active { border-color: #a7c7bc; color: #3d786b; background: linear-gradient(145deg,#eff8f3,#dcefe5); box-shadow: 0 0 0 3px rgba(105,157,137,.12),0 3px 8px rgba(38,59,71,.08); }.speech-button.active::after { position: absolute; z-index: -1; inset: -4px; border: 1px solid rgba(105,157,137,.42); border-radius: 50%; content: ''; animation: speech-ring 1.5s ease-out infinite; }.speech-button.active .speaker-wave { display: none; }.speech-button.active .speaker-stop { display: block; }.speech-row .memorize-term,.speech-row .kana-answer { margin: 10px 0 0; }.speech-playing { display: inline-flex; align-items: center; gap: 5px; color: #4b7869; font-size: 10px; white-space: nowrap; }.speech-playing i { width: 7px; height: 7px; border-radius: 50%; background: #6aab91; box-shadow: 0 0 0 3px rgba(106,171,145,.14); animation: speech-pulse .8s ease-in-out infinite alternate; }@keyframes speech-pulse { to { opacity: .35; transform: scale(.7); } }@keyframes speech-ring { to { transform: scale(1.16); opacity: 0; } }
@@ -1203,5 +1395,21 @@ function exportBackup() {
 }
 @media (prefers-reduced-motion: reduce) {
   .speech-button,.speech-button::after,.speech-playing i { animation: none; transition: none; }
+}
+.study-progress { width: min(390px, 52vw); display: grid; gap: 7px; }
+.study-progress-track { height: 9px; display: flex; overflow: hidden; border-radius: 999px; background: #e8eeeb; }
+.study-progress-track span { height: 100%; transition: width .25s ease; }
+.study-progress-known { background: #6f9c87; }
+.study-progress-unsure { background: #d3a26b; }
+.study-progress-unstudied { background: #dfe7e3; }
+.study-progress-legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 11px; color: #788887; font-size: 10px; }
+.study-progress-legend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.study-progress-legend i { width: 7px; height: 7px; border-radius: 50%; }
+.study-progress-legend .known-dot { background: #6f9c87; }
+.study-progress-legend .unsure-dot { background: #d3a26b; }
+.study-progress-legend .unstudied-dot { background: #dfe7e3; }
+@media (max-width: 640px) {
+  .study-progress { width: 100%; }
+  .study-progress-legend { justify-content: flex-start; }
 }
 </style>
