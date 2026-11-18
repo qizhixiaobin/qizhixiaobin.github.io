@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import ChristmasTreePage from '../views/ChristmasTreePage.vue'
 import JapaneseStudyPage from '../views/JapaneseStudyPage.vue'
 import ToolFeaturePage from '../views/ToolFeaturePage.vue'
 
@@ -8,6 +9,7 @@ const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/diy/bead-pattern', name: 'bead-pattern', component: ToolFeaturePage },
+    { path: '/diy/christmas-tree', name: 'christmas-tree', component: ChristmasTreePage },
     { path: '/diy/japanese-study', name: 'japanese-study', component: JapaneseStudyPage },
   ],
   scrollBehavior(_to, _from, savedPosition) {

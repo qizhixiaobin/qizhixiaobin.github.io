@@ -15,6 +15,7 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "three.js": "^0.77.1",
     "vue": "^3.5.42",
     "vue-router": "^5.3.1"
   },

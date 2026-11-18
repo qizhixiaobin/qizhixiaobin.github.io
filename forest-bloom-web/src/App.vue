@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import ChristmasTreePage from './views/ChristmasTreePage.vue'
 import JapaneseStudyPage from './views/JapaneseStudyPage.vue'
 import ToolFeaturePage from './views/ToolFeaturePage.vue'
 import { profile } from './data/profile'
@@ -48,6 +49,7 @@ function formatJson() {
 
 <template>
   <ToolFeaturePage v-if="route.name === 'bead-pattern'" />
+  <ChristmasTreePage v-else-if="route.name === 'christmas-tree'" />
   <JapaneseStudyPage v-else-if="route.name === 'japanese-study'" />
   <div v-else class="app-shell">
     <header class="site-header">
@@ -150,6 +152,13 @@ function formatJson() {
                 <h2>日语词汇与语法</h2>
                 <p>按汉字、假名或中文意思查词，浏览词汇与语法并记录学习状态。</p>
                 <span class="diy-card-link">开始学习 <b>↗</b></span>
+              </RouterLink>
+              <RouterLink class="diy-card" to="/diy/christmas-tree">
+                <span class="diy-card-index">03 / SEASONAL</span>
+                <span class="diy-card-icon" aria-hidden="true">🎄</span>
+                <h2>圣诞树</h2>
+                <p>点亮一棵属于冬日的圣诞树，把节日祝福分享给重要的人。</p>
+                <span class="diy-card-link">打开圣诞祝福 <b>↗</b></span>
               </RouterLink>
             </div>
           </template>
